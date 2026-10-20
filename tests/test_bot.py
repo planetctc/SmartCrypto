@@ -1,0 +1,216 @@
+import sys
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from bot.backtest import resample, run_backtest, synthetic  # noqa: E402
+from bot.config import Config, load_config  # noqa: E402
+from bot.engine import Engine  # noqa: E402
+from bot.exchange import Position  # noqa: E402
+from bot.risk import RiskManager, liquidation_price  # noqa: E402
+from bot.strategy import manage_position, prepare, signal_at  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[1]
+DAY = 86_400_000
+
+
+def cfg() -> Config:
+    return load_config(ROOT / "config.yaml")
+
+
+def test_config_loads_user_settings():
+    c = cfg()
+    assert c.leverage == 100 and c.min_margin_usd == 5 and c.max_margin_usd == 15
+    assert c.risk.daily_max_loss_pct == 0.30
+
+
+def test_liquidation_about_half_percent_at_100x():
+    liq = liquidation_price(100.0, "long", 100, 0.005)
+    assert liq == pytest.approx(99.5)
+    assert liquidation_price(100.0, "short", 100, 0.005) == pytest.approx(100.5)
+
+
+def test_sizing_margin_range_and_stop_inside_liquidation():
+    rm = RiskManager(cfg())
+    rm.update_equity(0, 100)
+    weak, _ = rm.size(100.0, 99.7, "long", 0.0, free_balance=100, equity=100)
+    strong, _ = rm.size(100.0, 99.7, "long", 1.0, free_balance=100, equity=100)
+    assert weak.margin == pytest.approx(5)
+    assert 5 < strong.margin <= 15
+    assert strong.expected_loss <= 10 + 1e-9          # max_loss_per_trade_usd
+    assert 99.7 > strong.liq_price                     # stop fires before liquidation
+
+
+def test_sizing_rejects_wide_and_tight_stops():
+    rm = RiskManager(cfg())
+    rm.update_equity(0, 100)
+    assert rm.size(100.0, 99.0, "long", 1, 100, 100)[0] is None    # 1% stop: past liquidation
+    assert rm.size(100.0, 99.95, "long", 1, 100, 100)[0] is None   # 0.05%: noise
+    assert rm.size(100.0, 100.3, "short", 1, 100, 100)[0] is not None
+
+
+def test_sizing_respects_remaining_daily_budget():
+    rm = RiskManager(cfg())
+    rm.update_equity(0, 100)
+    s, why = rm.size(100.0, 99.6, "long", 1, 100, equity=72)  # only 2 USDT left before -30%
+    assert s is None and "below min" in why
+
+
+def test_daily_loss_limit_and_reset_next_day():
+    rm = RiskManager(cfg())
+    t0 = 1_700_000_000_000
+    rm.update_equity(t0, 100)
+    assert not rm.daily_loss_hit(t0 + 1000, 71)
+    assert rm.daily_loss_hit(t0 + 2000, 70)
+    assert rm.daily_loss_hit(t0 + 3000, 90)            # stays halted for the rest of the day
+    assert not rm.can_open(t0 + 4000, "BTC/USDT:USDT", 0, 90)[0]
+    assert not rm.daily_loss_hit(t0 + DAY, 70)         # new day: 70 is the new start
+    assert rm.can_open(t0 + DAY, "BTC/USDT:USDT", 0, 70)[0]
+
+
+def test_day_resets_at_utc_plus_8_midnight():
+    rm = RiskManager(cfg())
+    midnight_utc8 = 1_700_006_400_000 - 8 * 3_600_000  # 2023-11-15 00:00 UTC+8
+    assert rm.day_key(midnight_utc8 - 1) + 1 == rm.day_key(midnight_utc8)
+
+
+def test_pause_after_consecutive_losses_and_cooldown():
+    c = cfg()
+    rm = RiskManager(c)
+    rm.update_equity(0, 100)
+    for i in range(c.risk.max_consecutive_losses):
+        rm.record_close(1000, "ETH/USDT:USDT", -1, True, 300_000)
+    ok, why = rm.can_open(2000, "BTC/USDT:USDT", 0, 96)
+    assert not ok and "consecutive" in why
+    later = 1000 + c.risk.pause_after_losses_minutes * 60_000 + 1
+    assert rm.can_open(later, "BTC/USDT:USDT", 0, 96)[0]
+
+
+def test_min_equity_kill_switch():
+    rm = RiskManager(cfg())
+    rm.update_equity(0, 49)
+    assert not rm.can_open(1, "BTC/USDT:USDT", 0, 49)[0]
+
+
+def test_no_lookahead_in_signals():
+    c = cfg()
+    df = synthetic(3000, seed=3)
+    full = prepare(df, resample(df, c.trend_timeframe), c)
+    cut = df.iloc[:2000]
+    part = prepare(cut, resample(cut, c.trend_timeframe), c)
+    cols = ["atr", "hh", "ll", "vol_avg", "trend"]
+    pd.testing.assert_frame_equal(full.iloc[:1990][cols].reset_index(drop=True),
+                                  part.iloc[:1990][cols].reset_index(drop=True))
+
+
+def test_signal_has_stop_on_correct_side():
+    c = cfg()
+    df = synthetic(6000, seed=1)
+    p = prepare(df, resample(df, c.trend_timeframe), c)
+    sigs = [s for s in (signal_at(r, c) for _, r in p.iterrows()) if s]
+    assert sigs
+    for s in sigs:
+        if s.side == "long":
+            assert s.stop < s.entry < s.take_profit
+        else:
+            assert s.take_profit < s.entry < s.stop
+        assert 0 <= s.strength <= 1
+
+
+def test_manage_moves_stop_to_breakeven_then_trails():
+    c = cfg()
+    d = manage_position("long", 100, 99.7, 99.7, price=100.31, best_price=100.31,
+                        atr_now=0.1, bars_held=3, cfg=c)
+    assert not d.close and d.new_stop > 100            # locked in above entry
+    d2 = manage_position("long", 100, d.new_stop, 99.7, price=d.new_stop - 0.01,
+                         best_price=100.31, atr_now=0.1, bars_held=4, cfg=c)
+    assert d2.close
+    d3 = manage_position("short", 100, 100.3, 100.3, price=100.1, best_price=99.9,
+                         atr_now=0.1, bars_held=48, cfg=c)
+    assert d3.close and d3.reason == "max hold time"
+
+
+def test_backtest_losses_bounded_and_no_liquidation():
+    c = cfg()
+    frames = {"BTC/USDT:USDT": synthetic(8000, seed=5),
+              "ETH/USDT:USDT": synthetic(8000, seed=6, start_price=3000)}
+    stats, trades, curve = run_backtest(c, frames, 100)
+    assert stats["trades"] > 0
+    assert stats.get("liquidations", 0) == 0
+    # every loss stays within the per-trade cap (small allowance for gaps through the stop)
+    assert trades.pnl.min() > -(c.risk.max_loss_per_trade_usd * 1.5)
+    assert trades.margin.between(5 - 1e-6, 15 + 1e-6).all()
+
+
+# ---------- engine with a fake exchange ----------
+class FakeBroker:
+    def __init__(self, df):
+        self.df, self.now = df, int(df.ts.iloc[-1]) + 300_000 + 1
+        self.px = float(df.close.iloc[-1])
+        self.equity = 100.0
+        self.pos: dict[str, Position] = {}
+        self.opened, self.closed = [], []
+
+    def setup_symbol(self, s): pass
+    def now_ms(self): return self.now
+    def price(self, s): return self.px
+    def balance(self): return self.equity, self.equity - sum(p.margin for p in self.pos.values())
+    def positions(self): return dict(self.pos)
+    def round_qty(self, s, q): return round(q, 4)
+    def cancel_triggers(self, s): pass
+
+    def ohlcv(self, s, tf, limit):
+        return self.df if tf == "5m" else resample(self.df, tf)
+
+    def open(self, s, side, qty, stop, tp):
+        self.opened.append((s, side, qty, stop, tp))
+        self.pos[s] = Position(s, side, qty, self.px, liquidation_price(self.px, side, 100, 0.005),
+                               0, self.px * qty / 100)
+        return self.px
+
+    def close(self, s, p):
+        self.closed.append(s)
+        self.pos.pop(s)
+        return self.px
+
+
+def _df_ending_in_signal(c):
+    df = synthetic(6000, seed=1)
+    p = prepare(df, resample(df, c.trend_timeframe), c)
+    for i in range(len(p) - 1, 500, -1):
+        if signal_at(p.iloc[i], c):
+            return df.iloc[: i + 1].reset_index(drop=True)
+    raise AssertionError("no signal found")
+
+
+def test_engine_opens_with_exchange_stop_and_tp(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    b = FakeBroker(_df_ending_in_signal(c))
+    e = Engine(c, b)
+    e.step()
+    assert len(b.opened) == 1
+    sym, side, qty, stop, tp = b.opened[0]
+    assert (stop < b.px < tp) if side == "long" else (tp < b.px < stop)
+    assert 5 - 1e-6 <= b.pos[sym].margin <= 15 + 1e-6
+    assert Path(c.state_file).exists()
+
+
+def test_engine_flattens_everything_on_daily_loss(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    b = FakeBroker(_df_ending_in_signal(c))
+    e = Engine(c, b)
+    e.step()
+    assert b.pos
+    b.equity = 69.0
+    b.now += 1000
+    e.step()
+    assert b.closed == ["BTC/USDT:USDT"] and not b.pos
+    b.equity, b.now = 69.0, b.now + 600_000
+    n = len(b.opened)
+    e.step()
+    assert len(b.opened) == n                          # no new trades for the rest of the day
