@@ -41,6 +41,7 @@ class RiskState:
     killed: bool = False           # equity fell below min_equity_stop_usd
     cooldown_until_ms: dict[str, int] = field(default_factory=dict)
     trades_today: int = 0
+    opens_today: int = 0
     realized_today: float = 0.0
 
     def to_dict(self) -> dict:
@@ -48,7 +49,8 @@ class RiskState:
 
     @classmethod
     def from_dict(cls, d: dict) -> "RiskState":
-        return cls(**d)
+        known = cls.__dataclass_fields__
+        return cls(**{k: v for k, v in d.items() if k in known})
 
 
 class RiskManager:
@@ -68,6 +70,7 @@ class RiskManager:
             self.state.day_key = dk
             self.state.day_start_equity = equity
             self.state.trades_today = 0
+            self.state.opens_today = 0
             self.state.realized_today = 0.0
         if self.r.min_equity_stop_usd > 0 and equity < self.r.min_equity_stop_usd:
             self.state.killed = True
@@ -88,6 +91,9 @@ class RiskManager:
         return max(0.0, equity - floor)
 
     # ---------- trade results ----------
+    def record_open(self) -> None:
+        self.state.opens_today += 1
+
     def record_close(self, now_ms: int, symbol: str, pnl: float, stopped_out: bool,
                      bar_ms: int) -> None:
         self.state.realized_today += pnl
@@ -112,6 +118,8 @@ class RiskManager:
             return False, "paused after consecutive losses"
         if now_ms < self.state.cooldown_until_ms.get(symbol, 0):
             return False, "symbol cooling down after stop-loss"
+        if self.r.max_trades_per_day and self.state.opens_today >= self.r.max_trades_per_day:
+            return False, f"max {self.r.max_trades_per_day} trades per day reached"
         if open_positions >= self.cfg.max_open_positions:
             return False, "max open positions reached"
         return True, "ok"
@@ -134,7 +142,9 @@ class RiskManager:
 
         strength = min(1.0, max(0.0, strength))
         margin = cfg.min_margin_usd + (cfg.max_margin_usd - cfg.min_margin_usd) * strength
-        cost_pct = stop_pct + 2 * (cfg.fees.taker + cfg.fees.slippage)
+        f = cfg.fees
+        entry_cost = f.maker if cfg.entry_order == "maker" else f.taker + f.slippage
+        cost_pct = stop_pct + entry_cost + f.taker + f.slippage  # exits are market orders
 
         # cap loss per trade and keep inside what is left of today's loss budget
         loss_cap = min(r.max_loss_per_trade_usd, self.daily_loss_budget_left(equity))

@@ -144,6 +144,34 @@ class BitgetBroker:
             fill = pos.entry if pos else self.price(symbol)
         return float(fill)
 
+    def open_maker(self, symbol: str, side: str, qty: float, price: float, stop: float,
+                   tp: float) -> str:
+        """Post-only limit entry (maker fee). Bitget rejects it instead of filling as taker
+        if the price has already moved through. Stop-loss / take-profit are attached the same
+        way as market entries."""
+        params = {
+            "marginMode": "isolated",
+            "hedged": False,
+            "postOnly": True,
+            "stopLoss": {"triggerPrice": float(self.ex.price_to_precision(symbol, stop))},
+            "takeProfit": {"triggerPrice": float(self.ex.price_to_precision(symbol, tp))},
+        }
+        order = self.ex.create_order(symbol, "limit", "buy" if side == "long" else "sell",
+                                     qty, float(self.ex.price_to_precision(symbol, price)), params)
+        return str(order["id"])
+
+    def order_status(self, symbol: str, order_id: str) -> tuple[str, float, float]:
+        """(status 'open'/'closed'/'canceled', filled qty, average fill price)."""
+        o = retry(self.ex.fetch_order, order_id, symbol)
+        return (o.get("status") or "open", float(o.get("filled") or 0),
+                float(o.get("average") or o.get("price") or 0))
+
+    def cancel_order(self, symbol: str, order_id: str) -> None:
+        try:
+            self.ex.cancel_order(order_id, symbol)
+        except (ccxt.OrderNotFound, ccxt.InvalidOrder) as e:
+            log.info("cancel %s on %s: %s", order_id, symbol, e)
+
     def close(self, symbol: str, pos: Position) -> float:
         side = "sell" if pos.side == "long" else "buy"
         order = self.ex.create_order(symbol, "market", side, pos.qty, None,
@@ -171,6 +199,8 @@ class PaperBroker:
         self.pos: dict[str, Position] = {}
         self.orders: dict[str, tuple[float, float]] = {}  # symbol -> (stop, tp)
         self.closed_by_exchange: list[tuple[str, float, str]] = []
+        self.limits: dict[str, dict] = {}  # order id -> simulated resting maker order
+        self._next_id = 1
 
     def setup_symbol(self, symbol: str) -> None:
         pass
@@ -193,7 +223,15 @@ class PaperBroker:
         return price * (1 + s) if worse_up else price * (1 - s)
 
     def tick(self) -> None:
-        """Fire simulated exchange-side stop / take-profit / liquidation."""
+        """Fill resting maker orders, then fire simulated stop / take-profit / liquidation."""
+        for o in self.limits.values():
+            if o["status"] != "open" or o["symbol"] in self.pos:
+                continue
+            px = self.price(o["symbol"])
+            if (o["side"] == "long" and px < o["price"]) or (o["side"] == "short" and px > o["price"]):
+                self._fill(o["symbol"], o["side"], o["qty"], o["price"], o["stop"], o["tp"],
+                           self.cfg.fees.maker)
+                o["status"] = "closed"
         for sym, p in list(self.pos.items()):
             px = self.price(sym)
             stop, tp = self.orders[sym]
@@ -231,14 +269,32 @@ class PaperBroker:
         q = float(self.ex.amount_to_precision(symbol, qty))
         return q if q >= (self.ex.market(symbol)["limits"]["amount"]["min"] or 0) else 0.0
 
-    def open(self, symbol, side, qty, stop, tp):
-        fill = self._slip(self.price(symbol), side, opening=True)
+    def _fill(self, symbol, side, qty, fill, stop, tp, fee_rate):
         notional = fill * qty
-        self.cash -= self._fee(notional)
+        self.cash -= notional * fee_rate
         liq = liquidation_price(fill, side, self.cfg.leverage, self.cfg.risk.maintenance_margin_rate)
         self.pos[symbol] = Position(symbol, side, qty, fill, liq, 0.0, notional / self.cfg.leverage)
         self.orders[symbol] = (stop, tp)
+
+    def open(self, symbol, side, qty, stop, tp):
+        fill = self._slip(self.price(symbol), side, opening=True)
+        self._fill(symbol, side, qty, fill, stop, tp, self.cfg.fees.taker)
         return fill
+
+    def open_maker(self, symbol, side, qty, price, stop, tp):
+        oid = f"paper-{self._next_id}"
+        self._next_id += 1
+        self.limits[oid] = {"symbol": symbol, "side": side, "qty": qty, "price": price,
+                            "stop": stop, "tp": tp, "status": "open"}
+        return oid
+
+    def order_status(self, symbol, order_id):
+        o = self.limits[order_id]
+        return o["status"], (o["qty"] if o["status"] == "closed" else 0.0), o["price"]
+
+    def cancel_order(self, symbol, order_id):
+        if self.limits[order_id]["status"] == "open":
+            self.limits[order_id]["status"] = "canceled"
 
     def close(self, symbol, pos):
         px = self.price(symbol)

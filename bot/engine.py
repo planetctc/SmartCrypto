@@ -29,6 +29,17 @@ class Trade:
     opened_ms: int
 
 
+@dataclass
+class PendingEntry:
+    order_id: str
+    side: str
+    qty: float
+    price: float
+    stop: float
+    take_profit: float
+    expires_ms: int
+
+
 class Engine:
     def __init__(self, cfg: Config, broker):
         self.cfg = cfg
@@ -36,6 +47,7 @@ class Engine:
         self.tf_ms = TF_MS[cfg.timeframe]
         self.state_path = Path(cfg.state_file)
         self.trades: dict[str, Trade] = {}
+        self.pending: dict[str, PendingEntry] = {}
         self.last_bar: dict[str, int] = {}
         self.atr: dict[str, float] = {}
         self.risk = RiskManager(cfg, self._load_state())
@@ -46,13 +58,15 @@ class Engine:
             return RiskState()
         d = json.loads(self.state_path.read_text())
         self.trades = {k: Trade(**v) for k, v in d.get("trades", {}).items()}
+        self.pending = {k: PendingEntry(**v) for k, v in d.get("pending", {}).items()}
         return RiskState.from_dict(d.get("risk", {}))
 
     def _save_state(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps({"risk": self.risk.state.to_dict(),
-                                   "trades": {k: asdict(v) for k, v in self.trades.items()}},
+                                   "trades": {k: asdict(v) for k, v in self.trades.items()},
+                                   "pending": {k: asdict(v) for k, v in self.pending.items()}},
                                   indent=2))
         tmp.replace(self.state_path)
 
@@ -82,9 +96,12 @@ class Engine:
 
         equity, free = b.balance()
         positions = b.positions()
+        self._check_pending(now, positions)
         self._forget_closed(now, positions)
 
         if self.risk.daily_loss_hit(now, equity) or self.risk.state.killed:
+            for sym in list(self.pending):
+                self._cancel_pending(sym, now, positions)
             if positions:
                 log.warning("RISK STOP (equity %.2f, day start %.2f): closing everything",
                             equity, self.risk.state.day_start_equity)
@@ -97,6 +114,54 @@ class Engine:
             if sym in positions:
                 self._manage(sym, positions[sym], now)
         self._save_state()
+
+    # ---------- maker entries ----------
+    def _check_pending(self, now: int, positions: dict[str, Position]) -> None:
+        for sym in list(self.pending):
+            pe = self.pending[sym]
+            status, filled, _ = self.broker.order_status(sym, pe.order_id)
+            if status == "open" and now < pe.expires_ms:
+                continue
+            if status == "open":
+                self._cancel_pending(sym, now, positions)
+                continue
+            self.pending.pop(sym)
+            if filled > 0:
+                self._on_filled(sym, pe, now)
+            else:
+                log.info("%s maker entry %s not filled (%s)", sym, pe.order_id, status)
+        if self.trades.keys() - positions.keys():
+            positions.clear()
+            positions.update(self.broker.positions())
+
+    def _cancel_pending(self, sym: str, now: int, positions: dict[str, Position]) -> None:
+        pe = self.pending.pop(sym)
+        self.broker.cancel_order(sym, pe.order_id)
+        status, filled, _ = self.broker.order_status(sym, pe.order_id)
+        if filled > 0:
+            log.info("%s maker entry partly filled %s/%s before cancel", sym, filled, pe.qty)
+            self._on_filled(sym, pe, now)
+        else:
+            log.info("%s maker entry %s cancelled (timeout)", sym, pe.order_id)
+
+    def _on_filled(self, sym: str, pe: PendingEntry, now: int) -> None:
+        pos = self.broker.positions().get(sym)
+        if pos is None:
+            return
+        self.risk.record_open()
+        self.trades[sym] = Trade(pe.side, pos.qty, pos.entry, pe.stop, pe.stop, pe.take_profit,
+                                 pos.entry, now)
+        log.info("FILLED %s %s qty=%s @ %.4f stop=%.4f tp=%.4f",
+                 sym, pe.side, pos.qty, pos.entry, pe.stop, pe.take_profit)
+        self._liq_safety(sym, pos, pe.stop, now)
+
+    def _liq_safety(self, sym: str, pos: Position, stop: float, now: int) -> None:
+        """If the exchange's real liquidation price sits inside our stop, get out now."""
+        sign = 1 if pos.side == "long" else -1
+        if pos.liq_price > 0 and sign * (stop - pos.liq_price) <= 0:
+            log.error("%s liquidation %.4f is before stop %.4f, closing immediately",
+                      sym, pos.liq_price, stop)
+            self._close(sym, pos, now, "liq safety")
 
     # ---------- helpers ----------
     def _forget_closed(self, now: int, positions: dict[str, Position]) -> None:
@@ -136,7 +201,7 @@ class Engine:
         row = prepared.iloc[-1]
         self.last_bar[sym] = int(row["ts"])
         self.atr[sym] = float(row["atr"])
-        if sym in positions:
+        if sym in positions or sym in self.pending:
             return
         sig = signal_at(row, self.cfg)
         if sig:
@@ -144,7 +209,7 @@ class Engine:
 
     def _try_open(self, sym, sig, now, positions) -> None:
         equity, free = self.broker.balance()
-        ok, why = self.risk.can_open(now, sym, len(positions), equity)
+        ok, why = self.risk.can_open(now, sym, len(positions) + len(self.pending), equity)
         if not ok:
             log.info("%s signal skipped: %s", sym, why)
             return
@@ -154,6 +219,9 @@ class Engine:
         if sign * (price - sig.entry) > 0.5 * dist:
             log.info("%s signal skipped: price already ran %.4f past signal", sym, price - sig.entry)
             return
+        maker = self.cfg.entry_order == "maker"
+        if maker:  # rest at the signal close, never on the wrong side of the market
+            price = min(price, sig.entry) if sig.side == "long" else max(price, sig.entry)
         stop = price - sign * dist
         tp = price + sign * dist * self.cfg.strategy.reward_risk
         sizing, why = self.risk.size(price, stop, sig.side, sig.strength, free, equity)
@@ -165,17 +233,22 @@ class Engine:
             log.info("%s signal skipped: size below exchange minimum", sym)
             return
 
+        if maker:
+            oid = self.broker.open_maker(sym, sig.side, qty, price, stop, tp)
+            self.pending[sym] = PendingEntry(oid, sig.side, qty, price, stop, tp,
+                                             now + self.cfg.maker_timeout_seconds * 1000)
+            log.info("MAKER %s %s qty=%s @ %.4f stop=%.4f tp=%.4f margin≈%.2f strength=%.2f (%s)",
+                     sym, sig.side, qty, price, stop, tp, sizing.margin, sig.strength, sig.reason)
+            return
+
         fill = self.broker.open(sym, sig.side, qty, stop, tp)
+        self.risk.record_open()
         log.info("OPEN %s %s qty=%s @ %.4f stop=%.4f tp=%.4f margin≈%.2f strength=%.2f (%s)",
                  sym, sig.side, qty, fill, stop, tp, sizing.margin, sig.strength, sig.reason)
         self.trades[sym] = Trade(sig.side, qty, fill, stop, stop, tp, fill, now)
-
-        # safety: if the exchange's real liquidation price sits inside our stop, get out now
         pos = self.broker.positions().get(sym)
-        if pos and pos.liq_price > 0 and sign * (stop - pos.liq_price) <= 0:
-            log.error("%s liquidation %.4f is before stop %.4f, closing immediately",
-                      sym, pos.liq_price, stop)
-            self._close(sym, pos, now, "liq safety")
+        if pos:
+            self._liq_safety(sym, pos, stop, now)
 
     def _manage(self, sym: str, p: Position, now: int) -> None:
         t = self.trades.get(sym)

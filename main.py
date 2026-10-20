@@ -4,6 +4,8 @@
   python main.py download --days 180            下载历史 K 线
   python main.py backtest                        用下载的数据回测
   python main.py backtest --synthetic            用随机生成的数据跑一遍（只测试程序，不代表真实表现）
+  python main.py compare                         普通模式和高频模式回测对比
+  （高频模式：所有命令加 --config config_hf.yaml）
   python main.py run                             按 config.yaml 的 mode 实时运行（paper / demo / live）
 """
 from __future__ import annotations
@@ -39,21 +41,27 @@ def cmd_download(cfg, args):
         download(sym, cfg.timeframe, args.days, args.exchange, args.data_dir)
 
 
-def cmd_backtest(cfg, args):
-    from bot.backtest import run_backtest, synthetic
+def load_frames(cfg, args, config_path):
+    from bot.backtest import synthetic
     from bot.data import csv_path, load_csv
     if args.synthetic:
-        frames = {s: synthetic(seed=i, start_price=[60_000, 3_000][i % 2])
-                  for i, s in enumerate(cfg.symbols)}
         print("注意：这是随机生成的数据，只用来检查程序，不代表真实行情表现。")
-    else:
-        frames = {}
-        for s in cfg.symbols:
-            p = csv_path(args.data_dir, args.exchange, s, cfg.timeframe)
-            if not p.exists():
-                sys.exit(f"找不到 {p}，先运行: python main.py download --exchange {args.exchange}")
-            frames[s] = load_csv(p)
-    stats, trades, curve = run_backtest(cfg, frames, args.balance)
+        step = {"1m": 60_000, "5m": 300_000}.get(cfg.timeframe, 300_000)
+        return {s: synthetic(seed=i, start_price=[60_000, 3_000][i % 2], step_ms=step)
+                for i, s in enumerate(cfg.symbols)}
+    frames = {}
+    for s in cfg.symbols:
+        p = csv_path(args.data_dir, args.exchange, s, cfg.timeframe)
+        if not p.exists():
+            sys.exit(f"找不到 {p}，先运行: python main.py download --config {config_path} "
+                     f"--exchange {args.exchange}")
+        frames[s] = load_csv(p)
+    return frames
+
+
+def cmd_backtest(cfg, args):
+    from bot.backtest import run_backtest
+    stats, trades, curve = run_backtest(cfg, load_frames(cfg, args, args.config), args.balance)
     out = Path(args.data_dir)
     out.mkdir(exist_ok=True)
     trades.to_csv(out / "backtest_trades.csv", index=False)
@@ -62,6 +70,28 @@ def cmd_backtest(cfg, args):
     for k, v in stats.items():
         print(f"{k:>24}: {v}")
     print(f"\n每笔交易: {out / 'backtest_trades.csv'}\n资金曲线: {out / 'backtest_equity.csv'}")
+
+
+def cmd_compare(_, args):
+    from bot.backtest import run_backtest
+    from bot.config import load_config
+    results = {}
+    for path in args.configs:
+        c = load_config(path)
+        stats, _, _ = run_backtest(c, load_frames(c, args, path), args.balance)
+        results[path] = stats
+    keys = ["days", "trades", "return_pct", "end_equity", "win_rate_pct", "profit_factor",
+            "max_drawdown_pct", "days_daily_limit_hit", "liquidations", "fees_paid"]
+    w = max(len(p) for p in results) + 2
+    print("\n===== 模式对比 =====")
+    print(f"{'':>22}" + "".join(f"{p:>{w}}" for p in results))
+    for k in keys:
+        vals = [results[p].get(k, "-") for p in results]
+        vals = [round(v, 2) if isinstance(v, float) else v for v in vals]
+        print(f"{k:>22}" + "".join(f"{str(v):>{w}}" for v in vals))
+    days = {p: max(r.get("days", 0) or 0, 1e-9) for p, r in results.items()}
+    print(f"{'trades_per_day':>22}" + "".join(
+        f"{round(results[p]['trades'] / days[p], 1):>{w}}" for p in results))
 
 
 def cmd_run(cfg, args):
@@ -82,7 +112,9 @@ def cmd_run(cfg, args):
 def main():
     from bot.config import load_config
     ap = argparse.ArgumentParser(description="smartMonitoring Bitget futures bot")
-    ap.add_argument("command", choices=["download", "backtest", "run"])
+    ap.add_argument("command", choices=["download", "backtest", "compare", "run"])
+    ap.add_argument("--configs", nargs="+", default=["config.yaml", "config_hf.yaml"],
+                    help="compare 用的配置文件")
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--days", type=int, default=180)
     ap.add_argument("--exchange", default="bitget", help="历史数据来源，例如 bitget 或 binanceusdm")
@@ -93,7 +125,8 @@ def main():
     cfg = load_config(args.config)
     setup_logging(cfg.log_file)
     print(BANNER)
-    {"download": cmd_download, "backtest": cmd_backtest, "run": cmd_run}[args.command](cfg, args)
+    {"download": cmd_download, "backtest": cmd_backtest, "compare": cmd_compare,
+     "run": cmd_run}[args.command](cfg, args)
 
 
 if __name__ == "__main__":

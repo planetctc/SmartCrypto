@@ -20,6 +20,7 @@ class RiskConfig:
     max_consecutive_losses: int = 4
     pause_after_losses_minutes: int = 120
     cooldown_bars_after_stop: int = 6
+    max_trades_per_day: int = 0      # 0 = no limit
 
 
 @dataclass
@@ -39,6 +40,7 @@ class StrategyConfig:
 @dataclass
 class FeeConfig:
     taker: float = 0.0006
+    maker: float = 0.0002
     slippage: float = 0.0002
 
 
@@ -53,6 +55,8 @@ class Config:
     min_margin_usd: float = 5.0
     max_margin_usd: float = 15.0
     max_open_positions: int = 2
+    entry_order: str = "market"      # "market" or "maker" (post-only limit, lower fee)
+    maker_timeout_seconds: int = 60  # cancel an unfilled maker entry after this long
     risk: RiskConfig = field(default_factory=RiskConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     fees: FeeConfig = field(default_factory=FeeConfig)
@@ -82,6 +86,8 @@ def load_config(path: str | Path = "config.yaml") -> Config:
 def validate(cfg: Config) -> None:
     if cfg.mode not in ("paper", "demo", "live"):
         raise ValueError("mode must be paper, demo or live")
+    if cfg.entry_order not in ("market", "maker"):
+        raise ValueError("entry_order must be market or maker")
     if cfg.margin_mode != "isolated":
         raise ValueError("only isolated margin is supported (limits each trade's loss to its margin)")
     if not 0 < cfg.min_margin_usd <= cfg.max_margin_usd:

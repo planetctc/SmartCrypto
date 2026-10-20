@@ -1,0 +1,72 @@
+# ============================================================
+# Bitget USDT 永续合约自动交易机器人 配置文件（高频模式：更多币、1 分钟 K 线、挂单进场）
+# 所有金额单位都是 USDT（约等于美金）
+# API key 不要写在这里！放在环境变量里（见 README）
+# ============================================================
+
+# 运行模式:
+#   paper = 本地模拟（用真实行情，不下单，不需要 API key）
+#   demo  = Bitget 模拟盘（假钱，需要模拟盘 API key）
+#   live  = 真钱实盘（还需要设置环境变量 I_UNDERSTAND_REAL_MONEY=yes 才会启动）
+mode: demo
+
+symbols:
+  - BTC/USDT:USDT
+  - ETH/USDT:USDT
+  - SOL/USDT:USDT
+  - XRP/USDT:USDT
+  - DOGE/USDT:USDT
+
+timeframe: 1m          # 进场看的 K 线周期
+trend_timeframe: 15m   # 判断大方向的 K 线周期
+
+# ---------------- 仓位和杠杆 ----------------
+leverage: 100          # 杠杆倍数（逐仓）
+margin_mode: isolated  # 逐仓：一单出事最多亏这单的保证金
+min_margin_usd: 5      # 每单最少保证金（信号一般时）
+max_margin_usd: 15     # 每单最多保证金（信号强时）
+max_open_positions: 3  # 同时最多持有几单
+
+# 进场方式:
+#   market = 市价单，马上成交，手续费 0.06%
+#   maker  = 挂单（只做 maker），手续费 0.02%，但价格跑掉就不成交
+entry_order: maker
+maker_timeout_seconds: 45   # 挂单多少秒没成交就撤单
+
+# ---------------- 风控（减少亏损的关键） ----------------
+risk:
+  daily_max_loss_pct: 0.30     # 一天亏到当天开始资金的 30% 就全部平仓，停到第二天
+  day_reset_utc_offset: 8      # "一天"按 UTC+8（北京/新加坡/马来西亚时间）00:00 重置
+  max_loss_per_trade_usd: 10   # 单笔止损+手续费最多亏多少，超过就自动缩小仓位
+  min_equity_stop_usd: 50      # 账户总资金低于这个数，机器人完全停止（设 0 关闭）
+  max_stop_pct: 0.0040         # 止损距离最大 0.40%（100 倍时爆仓大约在 0.5% 左右）
+  min_stop_pct: 0.0015         # 止损距离最小 0.15%（太近会被正常波动打掉）
+  liq_buffer_pct: 0.0008       # 止损价至少要比爆仓价早 0.08%
+  maintenance_margin_rate: 0.005  # 维持保证金率（估算爆仓价用，偏保守）
+  max_consecutive_losses: 4    # 连续亏 4 单就暂停
+  pause_after_losses_minutes: 120  # 暂停 2 小时
+  cooldown_bars_after_stop: 5  # 某个币止损后，等 5 根 K 线再在这个币上开单
+  max_trades_per_day: 40       # 每天最多开几单（防止手续费失控）
+
+# ---------------- 策略参数 ----------------
+strategy:
+  trend_ema: 50            # 15 分钟 EMA50 判断大方向
+  breakout_lookback: 15    # 突破最近 15 根 K 线的高点/低点才进场
+  volume_lookback: 20
+  volume_factor: 1.1       # 突破那根 K 线成交量要大于平均的 1.1 倍
+  atr_period: 14
+  atr_stop_mult: 1.5       # 止损 = 1.5 倍 ATR（再受上面的最大/最小止损限制）
+  reward_risk: 1.5         # 止盈 = 1.5 倍止损距离
+  breakeven_at_r: 0.8      # 赚到 0.8 倍止损距离后，把止损移到保本
+  trail_atr_mult: 1.5      # 之后用 1.5 倍 ATR 跟踪止损锁利润
+  max_hold_bars: 30        # 最多持有 30 根 K 线（1 分钟 × 30 = 30 分钟）
+
+# ---------------- 费用（回测和模拟用） ----------------
+fees:
+  taker: 0.0006          # 吃单手续费 0.06%
+  maker: 0.0002          # 挂单手续费 0.02%
+  slippage: 0.0002       # 估计滑点 0.02%
+
+loop_seconds: 5          # 实时模式每 5 秒检查一次
+state_file: data/state_hf.json
+log_file: data/bot_hf.log

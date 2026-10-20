@@ -214,3 +214,101 @@ def test_engine_flattens_everything_on_daily_loss(tmp_path):
     n = len(b.opened)
     e.step()
     assert len(b.opened) == n                          # no new trades for the rest of the day
+
+
+# ---------- high-frequency mode ----------
+def test_hf_config_loads():
+    c = load_config(ROOT / "config_hf.yaml")
+    assert c.timeframe == "1m" and c.entry_order == "maker" and len(c.symbols) == 5
+    assert c.risk.max_trades_per_day == 40 and c.risk.daily_max_loss_pct == 0.30
+    assert (c.leverage, c.min_margin_usd, c.max_margin_usd) == (100, 5, 15)
+
+
+def test_max_trades_per_day():
+    c = cfg()
+    c.risk.max_trades_per_day = 2
+    rm = RiskManager(c)
+    t0 = 1_700_000_000_000
+    rm.update_equity(t0, 100)
+    rm.record_open()
+    rm.record_open()
+    ok, why = rm.can_open(t0 + 1, "BTC/USDT:USDT", 0, 100)
+    assert not ok and "per day" in why
+    assert rm.can_open(t0 + DAY, "BTC/USDT:USDT", 0, 100)[0]
+
+
+def test_maker_sizing_cheaper_than_market():
+    c = cfg()
+    rm = RiskManager(c)
+    rm.update_equity(0, 100)
+    market, _ = rm.size(100.0, 99.7, "long", 1, 100, 100)
+    c.entry_order = "maker"
+    maker, _ = rm.size(100.0, 99.7, "long", 1, 100, 100)
+    assert maker.expected_loss / maker.notional < market.expected_loss / market.notional
+
+
+def test_backtest_maker_mode_fees_and_bounds():
+    c = load_config(ROOT / "config_hf.yaml")
+    c.symbols = c.symbols[:2]
+    frames = {s: synthetic(8000, seed=7 + i, start_price=[60_000, 3_000][i], step_ms=60_000)
+              for i, s in enumerate(c.symbols)}
+    stats, trades, _ = run_backtest(c, frames, 100)
+    assert stats["trades"] > 0 and stats.get("liquidations", 0) == 0
+    entry_fees = trades.fees - trades.exit * trades.qty * c.fees.taker
+    assert (entry_fees / (trades.entry * trades.qty)).round(6).eq(c.fees.maker).all()
+    assert trades.pnl.min() > -(c.risk.max_loss_per_trade_usd * 1.5)
+    # never more than the daily cap of entries on any UTC+8 day
+    day = (trades.open_time + 8 * 3_600_000) // DAY
+    assert day.value_counts().max() <= c.risk.max_trades_per_day
+
+
+class FakeMakerBroker(FakeBroker):
+    def __init__(self, df):
+        super().__init__(df)
+        self.limits = {}
+
+    def open_maker(self, s, side, qty, price, stop, tp):
+        oid = str(len(self.limits) + 1)
+        self.limits[oid] = {"s": s, "side": side, "qty": qty, "price": price, "status": "open"}
+        return oid
+
+    def order_status(self, s, oid):
+        o = self.limits[oid]
+        return o["status"], o["qty"] if o["status"] == "closed" else 0.0, o["price"]
+
+    def cancel_order(self, s, oid):
+        if self.limits[oid]["status"] == "open":
+            self.limits[oid]["status"] = "canceled"
+
+    def fill(self, oid):
+        o = self.limits[oid]
+        o["status"] = "closed"
+        self.pos[o["s"]] = Position(o["s"], o["side"], o["qty"], o["price"],
+                                    liquidation_price(o["price"], o["side"], 100, 0.005), 0,
+                                    o["price"] * o["qty"] / 100)
+
+
+def _maker_engine(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file, c.entry_order = ["BTC/USDT:USDT"], str(tmp_path / "s.json"), "maker"
+    b = FakeMakerBroker(_df_ending_in_signal(c))
+    return c, b, Engine(c, b)
+
+
+def test_engine_maker_entry_fills_and_is_tracked(tmp_path):
+    c, b, e = _maker_engine(tmp_path)
+    e.step()
+    assert len(b.limits) == 1 and not b.opened and "BTC/USDT:USDT" in e.pending
+    b.fill("1")
+    b.now += 1000
+    e.step()
+    assert "BTC/USDT:USDT" in e.trades and not e.pending
+    assert e.risk.state.opens_today == 1
+
+
+def test_engine_maker_entry_cancelled_after_timeout(tmp_path):
+    c, b, e = _maker_engine(tmp_path)
+    e.step()
+    b.now += c.maker_timeout_seconds * 1000 + 1
+    e.step()
+    assert b.limits["1"]["status"] == "canceled" and not e.pending and not e.trades

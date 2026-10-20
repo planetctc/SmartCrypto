@@ -37,6 +37,7 @@ class BtPos:
     best: float
     liq: float
     margin: float
+    entry_fee: float
     opened_i: int
     opened_ts: int
 
@@ -46,11 +47,13 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
     step = TF_MS[cfg.timeframe]
     risk = RiskManager(cfg)
 
-    prepared = {}
+    maker = cfg.entry_order == "maker"
+    # ts -> row dict per symbol: much faster than DataFrame.loc inside the loop
+    prepared: dict[str, dict[int, dict]] = {}
     for sym, df in frames.items():
-        p = prepare(df, resample(df, cfg.trend_timeframe), cfg).set_index("ts")
-        prepared[sym] = p
-    timeline = sorted(set().union(*[p.index for p in prepared.values()]))
+        p = prepare(df, resample(df, cfg.trend_timeframe), cfg)
+        prepared[sym] = {int(r["ts"]): r for r in p.to_dict("records")}
+    timeline = sorted(set().union(*[p.keys() for p in prepared.values()]))
 
     cash = start_balance
     pos: dict[str, BtPos] = {}
@@ -71,13 +74,14 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
         risk.record_close(ts, sym, pnl, pnl < 0 and why in ("stop", "managed stop hit"), step)
         trades.append({"symbol": sym, "side": p.side, "open_time": p.opened_ts, "close_time": ts,
                        "entry": p.entry, "exit": fill, "qty": p.qty, "margin": p.margin,
-                       "pnl": pnl - fee * p.entry * p.qty,  # include the opening fee
+                       "pnl": pnl - p.entry_fee,  # include the opening fee
+                       "fees": p.entry_fee + (0.0 if why == "liquidated" else fee * fill * p.qty),
                        "reason": why, "bars": i - p.opened_i})
 
     for i, ts in enumerate(timeline):
         # 1) fill pending entries at this bar's open
         for sym, sig in list(pending.items()):
-            row = prepared[sym].loc[ts] if ts in prepared[sym].index else None
+            row = prepared[sym].get(ts)
             pending.pop(sym)
             if row is None or sym in pos:
                 continue
@@ -87,26 +91,40 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
                 continue
             sign = 1 if sig.side == "long" else -1
             dist = abs(sig.entry - sig.stop)
-            fill = row["open"] * (1 + sign * slip)
-            if sign * (fill - sig.entry) > 0.5 * dist:
-                continue
+            if maker:
+                # post-only limit at the signal close; only counts as filled if price trades
+                # THROUGH it (a touch alone is not enough), otherwise the order times out
+                # (a post-only order would be rejected if the market already opened past it)
+                fill = sig.entry
+                if sign * (row["open"] - fill) < 0:
+                    continue
+                through = row["low"] < fill if sig.side == "long" else row["high"] > fill
+                if not through:
+                    continue
+                entry_fee = cfg.fees.maker
+            else:
+                fill = row["open"] * (1 + sign * slip)
+                if sign * (fill - sig.entry) > 0.5 * dist:
+                    continue
+                entry_fee = fee
             stop = fill - sign * dist
             tp = fill + sign * dist * cfg.strategy.reward_risk
             used = sum(p.margin for p in pos.values())
             sizing, _ = risk.size(fill, stop, sig.side, sig.strength, cash - used, equity)
             if sizing is None:
                 continue
-            cash -= fee * sizing.notional
+            cash -= entry_fee * sizing.notional
+            risk.record_open()
             pos[sym] = BtPos(sig.side, sizing.qty, fill, stop, stop, tp, fill,
                              liquidation_price(fill, sig.side, cfg.leverage,
                                                cfg.risk.maintenance_margin_rate),
-                             sizing.margin, i, ts)
+                             sizing.margin, entry_fee * sizing.notional, i, ts)
 
         # 2) manage open positions against this bar's range
         for sym in list(pos):
-            if ts not in prepared[sym].index:
+            row, p = prepared[sym].get(ts), pos[sym]
+            if row is None:
                 continue
-            row, p = prepared[sym].loc[ts], pos[sym]
             sign = 1 if p.side == "long" else -1
             o, h, l, c = row["open"], row["high"], row["low"], row["close"]
             adverse, favorable = (l, h) if p.side == "long" else (h, l)
@@ -117,6 +135,10 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
             elif sign * (adverse - p.stop) <= 0:
                 why = "stop" if p.stop == p.initial_stop else "managed stop hit"
                 close_pos(sym, p.stop, ts, why, i)
+            elif maker and p.opened_i == i:
+                # maker fill bar: we can't know if the high/low that would count for us came
+                # before or after the fill, so only the stop is checked on this bar
+                continue
             elif sign * (favorable - p.tp) >= 0:
                 close_pos(sym, p.tp, ts, "take-profit", i)
             else:
@@ -131,15 +153,16 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
         # 3) equity, daily loss limit
         upnl = 0.0
         for sym, p in pos.items():
-            if ts in prepared[sym].index:
+            if ts in prepared[sym]:
                 sign = 1 if p.side == "long" else -1
-                upnl += sign * (prepared[sym].loc[ts, "close"] - p.entry) * p.qty
+                upnl += sign * (prepared[sym][ts]["close"] - p.entry) * p.qty
         equity = cash + upnl
         if risk.daily_loss_hit(ts, equity):
             halted_days.add(risk.state.day_key)
+            pending.clear()
             for sym in list(pos):
-                if ts in prepared[sym].index:
-                    close_pos(sym, prepared[sym].loc[ts, "close"], ts, "daily loss limit", i)
+                if ts in prepared[sym]:
+                    close_pos(sym, prepared[sym][ts]["close"], ts, "daily loss limit", i)
             equity = cash
         curve.append((ts, equity))
         if risk.state.killed:
@@ -147,9 +170,9 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
 
         # 4) new signals on this closed bar, filled next bar
         for sym, p in prepared.items():
-            if sym in pos or ts not in p.index:
+            if sym in pos or ts not in p:
                 continue
-            sig = signal_at(p.loc[ts], cfg)
+            sig = signal_at(p[ts], cfg)
             if sig:
                 pending[sym] = sig
 
@@ -176,6 +199,7 @@ def summarize(trades, curve, start_balance, halted_days, killed):
             "profit_factor": round(float(wins.pnl.sum() / -losses.pnl.sum()), 2)
             if len(losses) and losses.pnl.sum() < 0 else float("inf"),
             "liquidations": int((tdf.reason == "liquidated").sum()),
+            "fees_paid": round(float(tdf.fees.sum()), 2),
             "exit_reasons": tdf.reason.value_counts().to_dict(),
         })
     stats["return_pct"] = round((stats["end_equity"] / start_balance - 1) * 100, 1)
