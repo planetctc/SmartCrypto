@@ -95,6 +95,8 @@ class Engine:
             b.closed_by_exchange.clear()
 
         equity, free = self._balance()
+        if equity <= 0:
+            return  # balance unreadable/empty: do nothing rather than trip the kill switch
         positions = b.positions()
         self._check_pending(now, positions)
         self._forget_closed(now, positions)
@@ -124,6 +126,11 @@ class Engine:
         if cap <= 0:
             return equity, free
         st = self.risk.state
+        if equity <= 0:
+            if not getattr(self, "_warned_zero", False):
+                self._warned_zero = True
+                log.warning("账户余额读到 0，机器人不会开单。请确认模拟盘合约账户里有 USDT。")
+            return 0.0, 0.0
         if st.equity_baseline <= 0:
             st.equity_baseline = equity
             log.info("capital_usd=%.2f: real equity %.2f taken as baseline", cap, equity)

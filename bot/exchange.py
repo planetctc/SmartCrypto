@@ -141,15 +141,41 @@ class BitgetBroker:
     def balance(self) -> tuple[float, float]:
         """(equity incl. unrealized PnL, free balance) in USDT."""
         b = retry(self.ex.fetch_balance, {"type": "swap"})
-        usdt = b.get("USDT", {})
-        free = float(usdt.get("free") or 0)
-        total = float(usdt.get("total") or 0)
-        upnl = sum(p.unrealized for p in self.positions().values())
-        info_equity = None
-        for item in b.get("info", []) if isinstance(b.get("info"), list) else []:
-            if item.get("marginCoin") == "USDT" and item.get("accountEquity"):
-                info_equity = float(item["accountEquity"])
-        return (info_equity if info_equity is not None else total + upnl), free
+        # demo accounts sometimes hold the test coin as SUSDT instead of USDT
+        coin = next((c for c in ("USDT", "SUSDT") if float((b.get(c) or {}).get("total") or 0) > 0),
+                    "USDT")
+        acct = b.get(coin) or {}
+        free = float(acct.get("free") or 0)
+        total = float(acct.get("total") or 0)
+        info = b.get("info")
+        equity = None
+        if self.uta:
+            # unified account: equity already includes unrealized PnL
+            data = info.get("data") if isinstance(info, dict) else None
+            if isinstance(data, dict):
+                for k in ("usdtEquity", "accountEquity"):
+                    if data.get(k) not in (None, ""):
+                        equity = float(data[k])
+                        break
+                if not free and data.get("unionAvailable") not in (None, ""):
+                    free = float(data["unionAvailable"])
+            if equity is None:
+                equity = total
+        else:
+            for item in info if isinstance(info, list) else []:
+                if item.get("marginCoin") in ("USDT", "SUSDT") and item.get("accountEquity"):
+                    equity = float(item["accountEquity"])
+            if equity is None:
+                equity = total + sum(p.unrealized for p in self.positions().values())
+        if equity <= 0 and not getattr(self, "_warned_empty", False):
+            self._warned_empty = True
+            coins = {k: v.get("total") for k, v in b.items()
+                     if isinstance(v, dict) and k not in ("info", "free", "used", "total", "debt")}
+            fields = sorted(info["data"].keys()) if isinstance(info, dict) and isinstance(
+                info.get("data"), dict) else type(info).__name__
+            log.warning("account balance reads as 0. coins seen: %s; response fields: %s",
+                        coins, fields)
+        return equity, free
 
     def positions(self) -> dict[str, Position]:
         out = {}

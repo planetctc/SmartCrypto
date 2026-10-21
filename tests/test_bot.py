@@ -352,3 +352,40 @@ def test_bitget_leverage_falls_back_to_symbol_max():
     b.ex.calls.clear()
     b.setup_symbol("XRP/USDT:USDT")
     assert b.ex.calls[:2] == [100, 75] and b.leverage_for("XRP/USDT:USDT") == 50
+
+
+def _broker_with_balance(raw, uta):
+    from bot.exchange import BitgetBroker
+
+    class FakeEx:
+        def fetch_balance(self, params=None):
+            return raw
+        def fetch_positions(self, symbols=None):
+            return []
+    b = BitgetBroker.__new__(BitgetBroker)
+    b.cfg, b.ex, b.uta, b.lev = cfg(), FakeEx(), uta, {}
+    return b
+
+
+def test_balance_reads_unified_account():
+    raw = {"info": {"data": {"usdtEquity": "50012.5", "accountEquity": "50012.5",
+                             "unionAvailable": "49000", "assets": []}},
+           "USDT": {"free": 49000.0, "total": 50012.5}}
+    assert _broker_with_balance(raw, True).balance() == (50012.5, 49000.0)
+
+
+def test_balance_reads_demo_susdt_coin():
+    raw = {"info": [{"marginCoin": "SUSDT", "accountEquity": "3000"}],
+           "SUSDT": {"free": 2900.0, "total": 3000.0}, "USDT": {"free": 0, "total": 0}}
+    assert _broker_with_balance(raw, False).balance() == (3000.0, 2900.0)
+
+
+def test_zero_balance_never_opens_and_keeps_no_baseline(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file, c.capital_usd = ["BTC/USDT:USDT"], str(tmp_path / "s.json"), 100
+    b = FakeBroker(_df_ending_in_signal(c))
+    b.equity = 0.0
+    e = Engine(c, b)
+    e.step()
+    assert not b.opened and e.risk.state.equity_baseline == 0
+    assert not e.risk.state.killed
