@@ -349,8 +349,13 @@ class PaperBroker:
     def _fill(self, symbol, side, qty, fill, stop, tp, fee_rate):
         notional = fill * qty
         self.cash -= notional * fee_rate
+        margin = notional / self.cfg.leverage
+        old = self.pos.get(symbol)
+        if old:  # adding to an open position (平加仓): average the entry, pool the margin
+            fill = (old.entry * old.qty + fill * qty) / (old.qty + qty)
+            qty, margin = old.qty + qty, old.margin + margin
         liq = liquidation_price(fill, side, self.cfg.leverage, self.cfg.risk.maintenance_margin_rate)
-        self.pos[symbol] = Position(symbol, side, qty, fill, liq, 0.0, notional / self.cfg.leverage)
+        self.pos[symbol] = Position(symbol, side, qty, fill, liq, 0.0, margin)
         self.orders[symbol] = (stop, tp)
 
     def open(self, symbol, side, qty, stop, tp):

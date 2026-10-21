@@ -139,6 +139,11 @@ def friendly(line: str) -> str:
     if r := re.match(r"OPEN (\S+) (long|short) qty=\S+ @ (\S+) stop=(\S+) tp=(\S+) margin≈(\S+)", msg):
         return (f"{t}  {coin(r[1])} 市价开仓{side(r[2])} @ {r[3]}，保证金 {r[6]}，"
                 f"止损 {r[4]}，止盈 {r[5]}")
+    if r := re.match(r"ADD (\S+) (long|short) qty=\S+ @ (\S+) -> total qty=\S+ avg=(\S+) stop=(\S+) \(add (\d+)\)", msg):
+        return (f"{t}  {coin(r[1])} 第 {r[6]} 次加仓{side(r[2])} @ {r[3]}，平均成本 {r[4]}，"
+                f"止损已在 {r[5]}")
+    if r := re.match(r"(\S+) add skipped: not enough free margin", msg):
+        return f"{t}  {coin(r[1])} 想加仓但保证金不够，没加"
     if r := re.match(r"FILLED (\S+) (long|short) qty=\S+ @ (\S+)", msg):
         return f"{t}  {coin(r[1])} 挂单成交，开仓{side(r[2])} @ {r[3]}"
     if r := re.match(r"(\S+) maker entry \S+ (not filled|cancelled)", msg):
@@ -171,6 +176,8 @@ def friendly(line: str) -> str:
         return f"{t}  账户余额读到 0"
     if "账户余额读到 0" in msg:
         return f"{t}  ⚠ 账户里没有 USDT，机器人不会开单"
+    if msg.startswith("network error"):
+        return f"{t}  网络断了一下，自动重试中"
     if "loop error" in msg:
         return f"{t}  ⚠ 出错了，会自动重试（看原始记录了解详情）"
     return line

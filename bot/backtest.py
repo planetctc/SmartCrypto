@@ -13,7 +13,7 @@ import pandas as pd
 
 from .config import Config
 from .risk import RiskManager, liquidation_price
-from .strategy import TF_MS, manage_position, prepare, signal_at
+from .strategy import TF_MS, manage_position, prepare, pyramid_add_qty, signal_at
 
 
 def resample(df: pd.DataFrame, tf: str) -> pd.DataFrame:
@@ -30,7 +30,7 @@ def resample(df: pd.DataFrame, tf: str) -> pd.DataFrame:
 class BtPos:
     side: str
     qty: float
-    entry: float
+    entry: float          # average entry (changes when adding)
     initial_stop: float
     stop: float
     tp: float
@@ -40,6 +40,10 @@ class BtPos:
     entry_fee: float
     opened_i: int
     opened_ts: int
+    first_entry: float = 0.0
+    base_qty: float = 0.0
+    adds: int = 0
+    last_add: float = 0.0
 
 
 def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: float = 100.0):
@@ -76,7 +80,28 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
                        "entry": p.entry, "exit": fill, "qty": p.qty, "margin": p.margin,
                        "pnl": pnl - p.entry_fee,  # include the opening fee
                        "fees": p.entry_fee + (0.0 if why == "liquidated" else fee * fill * p.qty),
-                       "reason": why, "bars": i - p.opened_i})
+                       "reason": why, "bars": i - p.opened_i, "adds": p.adds})
+
+    def add_to(p, close):
+        """平加仓 at this bar's close with a market order, same rules as live."""
+        nonlocal cash
+        sign = 1 if p.side == "long" else -1
+        q = pyramid_add_qty(p.side, p.first_entry, p.initial_stop, p.stop, p.entry, p.qty,
+                            p.base_qty, p.adds, p.last_add, close, cfg.leverage, cfg)
+        if q <= 0:
+            return
+        fill = close * (1 + sign * slip)
+        margin = q * fill / cfg.leverage
+        if margin > cash - sum(x.margin for x in pos.values()):
+            return
+        cash -= fee * q * fill
+        p.entry_fee += fee * q * fill
+        p.entry = (p.entry * p.qty + fill * q) / (p.qty + q)
+        p.qty += q
+        p.margin += margin
+        p.liq = liquidation_price(p.entry, p.side, cfg.leverage, cfg.risk.maintenance_margin_rate)
+        p.adds += 1
+        p.last_add = fill
 
     for i, ts in enumerate(timeline):
         # 1) fill pending entries at this bar's open
@@ -118,7 +143,8 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
             pos[sym] = BtPos(sig.side, sizing.qty, fill, stop, stop, tp, fill,
                              liquidation_price(fill, sig.side, cfg.leverage,
                                                cfg.risk.maintenance_margin_rate),
-                             sizing.margin, entry_fee * sizing.notional, i, ts)
+                             sizing.margin, entry_fee * sizing.notional, i, ts,
+                             fill, sizing.qty, 0, fill)
 
         # 2) manage open positions against this bar's range
         for sym in list(pos):
@@ -143,12 +169,14 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
                 close_pos(sym, p.tp, ts, "take-profit", i)
             else:
                 p.best = max(p.best, h) if p.side == "long" else min(p.best, l)
-                d = manage_position(p.side, p.entry, p.stop, p.initial_stop, c, p.best,
+                d = manage_position(p.side, p.first_entry, p.stop, p.initial_stop, c, p.best,
                                     row["atr"], i - p.opened_i, cfg)
                 if d.new_stop is not None:
                     p.stop = d.new_stop
                 if d.close:
                     close_pos(sym, c, ts, d.reason, i)
+                elif cfg.strategy.pyramid_max_adds:
+                    add_to(p, c)
 
         # 3) equity, daily loss limit
         upnl = 0.0

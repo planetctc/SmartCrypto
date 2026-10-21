@@ -10,7 +10,7 @@ from pathlib import Path
 from .config import Config
 from .exchange import Position
 from .risk import RiskManager, RiskState
-from .strategy import TF_MS, manage_position, prepare, signal_at
+from .strategy import TF_MS, manage_position, prepare, pyramid_add_qty, signal_at
 
 log = logging.getLogger("bot.engine")
 
@@ -27,6 +27,10 @@ class Trade:
     take_profit: float
     best: float
     opened_ms: int
+    avg_entry: float = 0.0   # average entry after adds (0 = same as entry)
+    base_qty: float = 0.0    # size of the first entry (0 = same as qty)
+    adds: int = 0
+    last_add: float = 0.0    # price of the latest add (0 = entry)
 
 
 @dataclass
@@ -192,7 +196,7 @@ class Engine:
             t = self.trades.pop(sym)
             px = self.broker.price(sym)
             sign = 1 if t.side == "long" else -1
-            pnl = sign * (px - t.entry) * t.qty
+            pnl = sign * (px - (t.avg_entry or t.entry)) * t.qty
             log.info("%s position gone (exchange stop/TP), approx pnl %.2f", sym, pnl)
             self.risk.record_close(now, sym, pnl, pnl < 0, self.tf_ms)
 
@@ -297,3 +301,31 @@ class Engine:
             t.stop = d.new_stop
         if d.close:
             self._close(sym, p, now, d.reason)
+        elif self.cfg.strategy.pyramid_max_adds:
+            self._try_add(sym, t, price, now)
+
+    def _try_add(self, sym: str, t: Trade, price: float, now: int) -> None:
+        """平加仓: add to a winner whose stop is locked in profit (rules in pyramid_add_qty)."""
+        lev = self.broker.leverage_for(sym) if hasattr(self.broker, "leverage_for") \
+            else self.cfg.leverage
+        avg = t.avg_entry or t.entry
+        q = pyramid_add_qty(t.side, t.entry, t.initial_stop, t.stop, avg, t.qty,
+                            t.base_qty or t.qty, t.adds, t.last_add or t.entry, price, lev, self.cfg)
+        q = self.broker.round_qty(sym, q) if q > 0 else 0.0
+        if q <= 0:
+            return
+        _, free = self._balance()
+        if q * price / lev > free * 0.95:
+            log.info("%s add skipped: not enough free margin", sym)
+            return
+        t.base_qty = t.base_qty or t.qty
+        fill = self.broker.open(sym, t.side, q, t.stop, t.take_profit)
+        t.avg_entry = (avg * t.qty + fill * q) / (t.qty + q)
+        t.qty += q
+        t.adds += 1
+        t.last_add = fill
+        log.info("ADD %s %s qty=%s @ %.4f -> total qty=%s avg=%.4f stop=%.4f (add %d)",
+                 sym, t.side, q, fill, t.qty, t.avg_entry, t.stop, t.adds)
+        pos = self.broker.positions().get(sym)
+        if pos:
+            self._liq_safety(sym, pos, t.stop, now)

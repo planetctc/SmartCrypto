@@ -1,3 +1,4 @@
+import math
 import sys
 from pathlib import Path
 
@@ -142,7 +143,8 @@ def test_backtest_losses_bounded_and_no_liquidation():
     assert stats.get("liquidations", 0) == 0
     # every loss stays within the per-trade cap (small allowance for gaps through the stop)
     assert trades.pnl.min() > -(c.risk.max_loss_per_trade_usd * 1.5)
-    assert trades.margin.between(5 - 1e-6, 15 + 1e-6).all()
+    first = trades[trades.adds == 0]  # adds (平加仓) put extra margin on top of the first entry
+    assert first.margin.between(5 - 1e-6, 15 + 1e-6).all()
 
 
 # ---------- engine with a fake exchange ----------
@@ -159,7 +161,7 @@ class FakeBroker:
     def price(self, s): return self.px
     def balance(self): return self.equity, self.equity - sum(p.margin for p in self.pos.values())
     def positions(self): return dict(self.pos)
-    def round_qty(self, s, q): return round(q, 4)
+    def round_qty(self, s, q): return math.floor(q * 1e4) / 1e4  # ccxt truncates
     def cancel_triggers(self, s): pass
 
     def ohlcv(self, s, tf, limit):
@@ -254,8 +256,9 @@ def test_backtest_maker_mode_fees_and_bounds():
               for i, s in enumerate(c.symbols)}
     stats, trades, _ = run_backtest(c, frames, 100)
     assert stats["trades"] > 0 and stats.get("liquidations", 0) == 0
-    entry_fees = trades.fees - trades.exit * trades.qty * c.fees.taker
-    assert (entry_fees / (trades.entry * trades.qty)).round(6).eq(c.fees.maker).all()
+    first = trades[trades.adds == 0]  # adds (平加仓) are taker orders
+    entry_fees = first.fees - first.exit * first.qty * c.fees.taker
+    assert (entry_fees / (first.entry * first.qty)).round(6).eq(c.fees.maker).all()
     assert trades.pnl.min() > -(c.risk.max_loss_per_trade_usd * 1.5)
     # never more than the daily cap of entries on any UTC+8 day
     day = (trades.open_time + 8 * 3_600_000) // DAY
@@ -404,3 +407,79 @@ def test_engine_fast_maker_fill_is_not_adopted_as_unknown(tmp_path):
     e.step()
     t = e.trades["BTC/USDT:USDT"]
     assert t.initial_stop == pe.stop and not e.pending
+
+
+# ---------- pyramiding (平加仓) ----------
+def _pyr_cfg():
+    c = cfg()
+    c.strategy.pyramid_max_adds, c.strategy.pyramid_step_r = 2, 1.0
+    c.strategy.pyramid_add_frac, c.strategy.pyramid_max_risk_usd = 0.5, 0.5
+    return c
+
+
+def _loss_at_stop(side, stop, avg, qty, c):
+    sign = 1 if side == "long" else -1
+    cost = c.fees.taker + c.fees.slippage
+    return -(sign * (stop - avg) * qty - cost * (avg + stop) * qty)
+
+
+def test_pyramid_only_after_stop_is_locked_and_risk_is_capped():
+    from bot.strategy import pyramid_add_qty
+    c = _pyr_cfg()
+    # BTC long 1 @ 100000, initial stop 99850 (0.15%), qty 0.0125 (~1250 notional)
+    args = dict(side="long", first_entry=100000, initial_stop=99850, avg_entry=100000,
+                qty=0.0125, base_qty=0.0125, adds=0, last_add=100000, leverage=100, cfg=c)
+    assert pyramid_add_qty(stop=99850, price=100200, **args) == 0      # stop not at break-even yet
+    assert pyramid_add_qty(stop=100170, price=100100, **args) == 0     # not 1R further yet
+    q = pyramid_add_qty(stop=100170, price=100300, **args)
+    assert 0 < q <= 0.0125 * 0.5
+    avg = (100000 * 0.0125 + 100300 * q) / (0.0125 + q)
+    assert _loss_at_stop("long", 100170, avg, 0.0125 + q, c) <= 0.5 + 1e-9
+    assert liquidation_price(avg, "long", 100, 0.005) < 100170
+    assert pyramid_add_qty(stop=100170, price=100300, **{**args, "adds": 2}) == 0
+    # short mirror
+    qs = pyramid_add_qty("short", 100000, 100150, 99830, 100000, 0.0125, 0.0125, 0, 100000,
+                         99700, 100, c)
+    assert qs > 0
+
+
+def test_engine_adds_to_winner_with_exchange_stop(tmp_path):
+    c = _pyr_cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    b = FakeBroker(_df_ending_in_signal(c))
+
+    def open_(s, side, qty, stop, tp):  # merge adds into the position like the exchange does
+        b.opened.append((s, side, qty, stop, tp))
+        old = b.pos.get(s)
+        q, e0 = (old.qty + qty, (old.entry * old.qty + b.px * qty) / (old.qty + qty)) if old \
+            else (qty, b.px)
+        b.pos[s] = Position(s, side, q, e0, liquidation_price(e0, side, 100, 0.005), 0, e0 * q / 100)
+        return b.px
+    b.open = open_
+    e = Engine(c, b)
+    e.step()
+    sym = "BTC/USDT:USDT"
+    t = e.trades[sym]
+    sign = 1 if t.side == "long" else -1
+    b.px = t.entry + sign * 1.3 * abs(t.entry - t.initial_stop)
+    b.now += 1000
+    e.step()
+    t = e.trades[sym]
+    assert t.adds == 1 and len(b.opened) == 2
+    _, _, q, stop, _ = b.opened[1]
+    assert stop == t.stop and sign * (t.stop - t.entry) > 0           # add carries the locked stop
+    assert _loss_at_stop(t.side, t.stop, t.avg_entry, t.qty, c) <= 0.5 + 1e-6
+    b.now += 1000
+    e.step()
+    assert e.trades[sym].adds == 1                                    # no add without new progress
+
+
+def test_backtest_with_pyramiding_adds_and_stays_bounded():
+    c = _pyr_cfg()
+    c.strategy.reward_risk = 3.0
+    frames = {"BTC/USDT:USDT": synthetic(8000, seed=5),
+              "ETH/USDT:USDT": synthetic(8000, seed=6, start_price=3000)}
+    stats, trades, _ = run_backtest(c, frames, 100)
+    assert (trades.adds > 0).any()
+    assert stats.get("liquidations", 0) == 0
+    assert trades.pnl.min() > -(c.risk.max_loss_per_trade_usd * 1.5)

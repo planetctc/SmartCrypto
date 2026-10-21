@@ -35,6 +35,11 @@ class StrategyConfig:
     breakeven_at_r: float = 1.0
     trail_atr_mult: float = 1.5
     max_hold_bars: int = 48
+    # pyramiding (平加仓): once the stop is locked past break-even, add to the winner
+    pyramid_max_adds: int = 0          # 0 = off
+    pyramid_step_r: float = 1.0        # add each time price runs another N x initial risk
+    pyramid_add_frac: float = 0.5      # each add = this fraction of the first entry size
+    pyramid_max_risk_usd: float = 1.0  # whole position may lose at most this if the stop hits
 
 
 @dataclass
@@ -103,3 +108,6 @@ def validate(cfg: Config) -> None:
         raise ValueError("risk.daily_max_loss_pct must be between 0 and 1")
     if not 0 < r.min_stop_pct < r.max_stop_pct:
         raise ValueError("need 0 < risk.min_stop_pct < risk.max_stop_pct")
+    s = cfg.strategy
+    if s.pyramid_max_adds < 0 or s.pyramid_step_r <= 0 or not 0 < s.pyramid_add_frac <= 1:
+        raise ValueError("need pyramid_max_adds >= 0, pyramid_step_r > 0, 0 < pyramid_add_frac <= 1")
