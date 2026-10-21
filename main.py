@@ -121,7 +121,19 @@ def cmd_run(cfg, args):
     Engine(cfg, broker).run()
 
 
+def force_utf8_output():
+    """Windows consoles and redirected output default to cp1252/gbk, which cannot print the
+    banner or Chinese messages; never let printing crash the bot."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main():
+    force_utf8_output()
     from bot.config import load_config
     ap = argparse.ArgumentParser(description="smartMonitoring Bitget futures bot")
     ap.add_argument("command", choices=["download", "backtest", "compare", "run"])

@@ -375,7 +375,7 @@ class Panel(tk.Tk):
         if mode == "live":
             if not messagebox.askyesno("真钱实盘", "这个配置是真钱实盘（mode: live）。确定要用真钱开始吗？"):
                 return
-        env = dict(os.environ)
+        env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
         if mode == "live":
             env["I_UNDERSTAND_REAL_MONEY"] = "yes"
         log_file.parent.mkdir(parents=True, exist_ok=True)
