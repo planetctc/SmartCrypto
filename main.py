@@ -132,6 +132,18 @@ def force_utf8_output():
                 pass
 
 
+def apply_overrides(cfg, coins: str | None, margin: float | None) -> None:
+    """Control-panel choices: which coins to trade and one fixed margin for every trade."""
+    from bot.config import validate
+    if coins:
+        cfg.symbols = [f"{c.strip().upper()}/USDT:USDT" for c in coins.split(",") if c.strip()]
+        if not cfg.symbols:
+            raise SystemExit("--coins 至少要有一个币")
+    if margin:
+        cfg.min_margin_usd = cfg.max_margin_usd = margin
+    validate(cfg)
+
+
 def main():
     force_utf8_output()
     from bot.config import load_config
@@ -145,8 +157,11 @@ def main():
     ap.add_argument("--data-dir", default="data")
     ap.add_argument("--balance", type=float, default=100.0, help="回测/本地模拟的起始资金")
     ap.add_argument("--synthetic", action="store_true")
+    ap.add_argument("--coins", help="只开这些币，覆盖配置文件，例如 BTC,ETH,SOL")
+    ap.add_argument("--margin", type=float, help="每单固定保证金 USDT，覆盖配置文件的 5–15 区间")
     args = ap.parse_args()
     cfg = load_config(args.config)
+    apply_overrides(cfg, args.coins, args.margin)
     setup_logging(cfg.log_file)
     print(BANNER)
     {"download": cmd_download, "backtest": cmd_backtest, "compare": cmd_compare,

@@ -483,3 +483,14 @@ def test_backtest_with_pyramiding_adds_and_stays_bounded():
     assert (trades.adds > 0).any()
     assert stats.get("liquidations", 0) == 0
     assert trades.pnl.min() > -(c.risk.max_loss_per_trade_usd * 1.5)
+
+
+def test_panel_overrides_coins_and_fixed_margin():
+    from main import apply_overrides
+    c = cfg()
+    apply_overrides(c, "btc, sol", 10)
+    assert c.symbols == ["BTC/USDT:USDT", "SOL/USDT:USDT"]
+    r = RiskManager(c)
+    r.update_equity(0, 100)
+    margins = {round(r.size(100, 99.8, "long", s, 100, 100)[0].margin, 6) for s in (0, 0.5, 1)}
+    assert margins == {10.0}                       # same margin whatever the signal strength

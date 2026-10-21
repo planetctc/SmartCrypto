@@ -44,3 +44,14 @@ def test_read_paths_for_both_modes():
     log, pid, mode = gui.read_paths("config_hf.yaml")
     assert log.name == "bot_hf.log" and pid.name == "state_hf.pid" and mode in ("paper", "demo", "live")
     assert gui.read_paths("config.yaml")[1].name == "state.pid"
+
+
+def test_settings_roundtrip_and_run_command(tmp_path):
+    f = tmp_path / "s.json"
+    assert gui.load_settings(f) == {"coins": list(gui.COINS), "margin": 10.0}
+    gui.save_settings({"coins": ["BTC", "SOL"], "margin": 12}, f)
+    assert gui.load_settings(f) == {"coins": ["BTC", "SOL"], "margin": 12.0}
+    f.write_text('{"coins": ["XXX"], "margin": 99}')
+    assert gui.load_settings(f) == {"coins": list(gui.COINS), "margin": 15.0}
+    cmd = gui.run_command("config_hf.yaml", ["BTC", "SOL"], 12.0)
+    assert cmd[-6:] == ["--config", "config_hf.yaml", "--coins", "BTC,SOL", "--margin", "12"]

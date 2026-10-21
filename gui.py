@@ -6,6 +6,7 @@ running; the panel asks what to do.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
@@ -26,6 +27,9 @@ NO_WINDOW = 0x08000000 if IS_WIN else 0  # CREATE_NO_WINDOW
 MODES = {"高频模式": "config_hf.yaml", "普通模式": "config.yaml"}
 KEY_VARS = ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE")
 MODE_NAMES = {"paper": "本地模拟", "demo": "Bitget 模拟盘", "live": "真钱实盘"}
+COINS = ("BTC", "ETH", "SOL", "XRP", "DOGE")
+SETTINGS_FILE = ROOT / "data" / "panel_settings.json"
+MARGIN_MIN, MARGIN_MAX = 5, 15
 
 PNL_RE = re.compile(r"(?:pnl≈|approx pnl )(-?\d+(?:\.\d+)?)")
 LINE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}")
@@ -37,6 +41,28 @@ def read_paths(config_file: str) -> tuple[Path, Path, str]:
     cfg = yaml.safe_load((ROOT / config_file).read_text(encoding="utf-8")) or {}
     state = ROOT / cfg.get("state_file", "data/state.json")
     return ROOT / cfg.get("log_file", "data/bot.log"), state.with_suffix(".pid"), cfg.get("mode", "demo")
+
+
+def load_settings(path: Path = SETTINGS_FILE) -> dict:
+    """Coins ticked and fixed margin per trade, remembered between panel sessions."""
+    st = {"coins": list(COINS), "margin": 10.0}
+    try:
+        st.update(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        pass
+    st["coins"] = [c for c in st["coins"] if c in COINS] or list(COINS)
+    st["margin"] = min(MARGIN_MAX, max(MARGIN_MIN, float(st["margin"])))
+    return st
+
+
+def save_settings(st: dict, path: Path = SETTINGS_FILE) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+
+
+def run_command(config_file: str, coins: list[str], margin: float) -> list[str]:
+    return [sys.executable, str(ROOT / "main.py"), "run", "--config", config_file,
+            "--coins", ",".join(coins), "--margin", f"{margin:g}"]
 
 
 def pid_alive(pid: int) -> bool:
@@ -219,6 +245,9 @@ class Panel(tk.Tk):
         self.proc: subprocess.Popen | None = None
         self.mode = tk.StringVar(value="高频模式")
         self.raw = tk.BooleanVar(value=False)
+        st = load_settings()
+        self.coin_vars = {c: tk.BooleanVar(value=c in st["coins"]) for c in COINS}
+        self.margin = tk.StringVar(value=f"{st['margin']:g}")
         self._log_sig = None
         self._build()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -269,6 +298,26 @@ class Panel(tk.Tk):
         self._button(ctrl, "设置 API key", "#334155", self.key_dialog).pack(side="right")
         self.key_label = self._label(ctrl, "", 10, MUTED)
         self.key_label.pack(side="right", padx=8)
+
+        pick = tk.Frame(self, bg=BG)
+        pick.pack(fill="x", padx=16, pady=(2, 4))
+        self._label(pick, "币种", 11, MUTED).pack(side="left")
+        self.inputs = []
+        for c in COINS:
+            cb = tk.Checkbutton(pick, text=c, variable=self.coin_vars[c], bg=BG, fg=FG,
+                                selectcolor=CARD, activebackground=BG, activeforeground=FG,
+                                font=(self.font, 10), command=self.save_choices)
+            cb.pack(side="left", padx=(6, 0))
+            self.inputs.append(cb)
+        self._label(pick, "每单保证金", 11, MUTED).pack(side="left", padx=(20, 6))
+        sp = tk.Spinbox(pick, from_=MARGIN_MIN, to=MARGIN_MAX, increment=1, width=4,
+                        textvariable=self.margin, bg=CARD, fg=FG, buttonbackground=CARD,
+                        insertbackground=FG, relief="flat", font=(self.font, 11),
+                        command=self.save_choices)
+        sp.bind("<FocusOut>", lambda e: self.save_choices())
+        sp.pack(side="left")
+        self.inputs.append(sp)
+        self._label(pick, "USDT（每单都一样）", 10, MUTED).pack(side="left", padx=4)
 
         cards = tk.Frame(self, bg=BG)
         cards.pack(fill="x", padx=12, pady=8)
@@ -330,6 +379,8 @@ class Panel(tk.Tk):
             self.status.configure(text="● 已停止", fg=MUTED)
             self.start_btn.configure(state="normal", bg=GREEN)
             self.stop_btn.configure(state="disabled", bg="#334155")
+        for w in self.inputs:  # choices apply when the bot starts, so lock them while it runs
+            w.configure(state="disabled" if pid or starting else "normal")
         has_keys = all(os.environ.get(k) for k in KEY_VARS)
         self.key_label.configure(text="API key 已设置" if has_keys else "API key 未设置",
                                  fg=GREEN if has_keys else AMBER)
@@ -376,6 +427,19 @@ class Panel(tk.Tk):
             self.log.see("end")
 
     # ----- actions -----
+    def choices(self) -> tuple[list[str], float | None]:
+        coins = [c for c in COINS if self.coin_vars[c].get()]
+        try:
+            margin = float(self.margin.get())
+        except ValueError:
+            return coins, None
+        return coins, margin if MARGIN_MIN <= margin <= MARGIN_MAX else None
+
+    def save_choices(self):
+        coins, margin = self.choices()
+        if coins and margin:
+            save_settings({"coins": coins, "margin": margin})
+
     def start(self):
         other = self.other_running()
         if other:
@@ -385,6 +449,14 @@ class Panel(tk.Tk):
         if mode in ("demo", "live") and not all(os.environ.get(k) for k in KEY_VARS):
             messagebox.showwarning("SmartCrypto", "请先点「设置 API key」。")
             return
+        coins, margin = self.choices()
+        if not coins:
+            messagebox.showwarning("SmartCrypto", "至少勾选一个币。")
+            return
+        if margin is None:
+            messagebox.showwarning("SmartCrypto", f"每单保证金要在 {MARGIN_MIN}–{MARGIN_MAX} USDT 之间。")
+            return
+        self.save_choices()
         if mode == "live":
             if not messagebox.askyesno("真钱实盘", "这个配置是真钱实盘（mode: live）。确定要用真钱开始吗？"):
                 return
@@ -394,7 +466,7 @@ class Panel(tk.Tk):
         log_file.parent.mkdir(parents=True, exist_ok=True)
         err = open(log_file.parent / "panel_errors.log", "a", encoding="utf-8")
         self.proc = subprocess.Popen(
-            [sys.executable, str(ROOT / "main.py"), "run", "--config", MODES[self.mode.get()]],
+            run_command(MODES[self.mode.get()], coins, margin),
             cwd=str(ROOT), env=env, stdout=subprocess.DEVNULL, stderr=err,
             creationflags=NO_WINDOW | (0x00000200 if IS_WIN else 0))  # + NEW_PROCESS_GROUP
         self.after(4000, self.check_started)
