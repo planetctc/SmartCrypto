@@ -39,29 +39,29 @@
 
 1. 安装 Python 3.11 以上：https://www.python.org/downloads/ （安装时勾选 "Add Python to PATH"）
 2. 把整个 `bitget-futures-bot` 文件夹复制到电脑上，在文件夹里打开 PowerShell
-3. 安装依赖：
+3. 安装依赖（Windows 上用 `py`，不是 `python` 或 `pip`）：
    ```powershell
-   pip install -r requirements.txt
+   py -m pip install -r requirements.txt
    ```
 
 ## 4. 使用步骤
 
 ### 第一步：下载历史数据并回测（不需要 API key）
 ```powershell
-python main.py download --days 180
-python main.py backtest
+py main.py download --days 180
+py main.py backtest
 ```
 如果 Bitget 只给了最近一段数据，可以用币安的历史数据回测（价格走势几乎一样）：
 ```powershell
-python main.py download --days 365 --exchange binanceusdm
-python main.py backtest --exchange binanceusdm
+py main.py download --days 365 --exchange binanceusdm
+py main.py backtest --exchange binanceusdm
 ```
 结果会显示收益、胜率、最大回撤、每天亏到 30% 的次数等，每笔交易在 `data/backtest_trades.csv`。
 
 ### 第二步：本地模拟（真实行情，不下单，不需要 API key）
 把 `config.yaml` 里的 `mode` 改成 `paper`：
 ```powershell
-python main.py run
+py main.py run
 ```
 
 ### 第三步：Bitget 模拟盘（假钱）
@@ -74,7 +74,7 @@ python main.py run
    ```
 3. `config.yaml` 里 `mode: demo`，然后：
    ```powershell
-   python main.py run
+   py main.py run
    ```
 建议至少跑 3–5 天，看 `data/bot.log` 里的每一笔开仓、平仓。
 
@@ -108,16 +108,16 @@ $env:I_UNDERSTAND_REAL_MONEY="yes"
 
 **先回测对比两种模式，再决定用哪个：**
 ```powershell
-python main.py download --days 60 --config config_hf.yaml
-python main.py download --days 180
-python main.py compare
+py main.py download --days 60 --config config_hf.yaml
+py main.py download --days 180
+py main.py compare
 ```
 对比表里要特别看 `fees_paid`（总手续费）和 `return_pct`（扣完手续费后的收益）。
 单多手续费就多，高频模式只有在每单平均赚得比手续费多时才划算。
 
 运行高频模式：所有命令加 `--config config_hf.yaml`，例如
 ```powershell
-python main.py run --config config_hf.yaml
+py main.py run --config config_hf.yaml
 ```
 两种模式的状态和日志分开保存，可以分别测试。
 回测时挂单要价格"穿过"挂单价才算成交，成交那根 K 线只检查止损不算止盈，偏保守。
@@ -134,7 +134,7 @@ python main.py run --config config_hf.yaml
 | `bot/exchange.py` | Bitget 下单（模拟盘/实盘）和本地模拟 |
 | `bot/engine.py` | 实时循环 |
 | `bot/backtest.py` | 回测 |
-| `tests/` | 自动测试：`python -m pytest tests` |
+| `tests/` | 自动测试：`py -m pytest tests` |
 
 ## 7. 需要知道的限制
 
