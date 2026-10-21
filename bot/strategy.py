@@ -183,6 +183,10 @@ def trade_plan(side: str, entry: float, stop_dist: float, cfg: Config) -> TradeP
     tps = [entry + sign * stop_dist * r for r in s.take_profit_r]
     if s.avoid_round_numbers:
         stop = off_round(stop, side, "stop")
-        tps = [off_round(tp, side, "tp") for tp in tps]
+        moved = []
+        for tp in tps:  # keep every level its own price (ETH 1.2R and 2R can share a round level)
+            nice = off_round(tp, side, "tp")
+            moved.append(nice if not moved or sign * (nice - moved[-1]) > 0 else tp)
+        tps = moved
     add = entry - sign * stop_dist * s.scale_in_at_r if s.scale_in_frac < 1 else entry
     return TradePlan(stop, add, tps)

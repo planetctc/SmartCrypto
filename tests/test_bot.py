@@ -134,11 +134,11 @@ def test_signal_has_stop_on_correct_side():
 
 def test_manage_moves_stop_to_breakeven_then_trails():
     c = cfg()
-    d = manage_position("long", 100, 99.7, 99.7, price=100.31, best_price=100.31,
+    d = manage_position("long", 100, 99.7, 99.7, price=100.40, best_price=100.40,
                         atr_now=0.1, bars_held=3, cfg=c)
     assert not d.close and d.new_stop > 100            # locked in above entry
     d2 = manage_position("long", 100, d.new_stop, 99.7, price=d.new_stop - 0.01,
-                         best_price=100.31, atr_now=0.1, bars_held=4, cfg=c)
+                         best_price=100.40, atr_now=0.1, bars_held=4, cfg=c)
     assert d2.close
     d3 = manage_position("short", 100, 100.3, 100.3, price=100.1, best_price=99.9,
                          atr_now=0.1, bars_held=48, cfg=c)
@@ -509,3 +509,18 @@ def test_cross_margin_param_per_account_type():
     b = _broker_with_balance({}, uta=True)
     b.cfg.margin_mode = "isolated"
     assert b.order_margin_mode == "isolated"
+
+
+def test_take_profit_ladder_keeps_distinct_levels_on_eth():
+    from bot.strategy import trade_plan
+    # ETH 2486.82 with an ~8 point stop: 1.2R and 2R both sit next to 2500 (seen on demo)
+    tps = trade_plan("long", 2486.82, 8, cfg()).take_profits
+    assert tps == sorted(set(tps)) and len(tps) == 3
+
+
+def test_only_one_position_even_with_two_signals_in_one_loop(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT", "ETH/USDT:USDT"], str(tmp_path / "s.json")
+    b = FakeBroker(_df_ending_in_signal(c))   # same candles -> both coins signal together
+    Engine(c, b).step()
+    assert len(b.opened) == 1

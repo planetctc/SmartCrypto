@@ -154,6 +154,14 @@ def coin(sym: str) -> str:
 
 def friendly(line: str) -> str:
     """Turn a log line into a short Chinese sentence; unknown lines are returned as-is."""
+    out = _friendly(line)
+    if out is line:
+        return line
+    # BTC/ETH-size prices without decimals, the way traders read them (83528.96218 -> 83529)
+    return re.sub(r"\b\d{4,}\.\d+", lambda m: f"{float(m[0]):.0f}", out)
+
+
+def _friendly(line: str) -> str:
     m = re.match(r"^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}):\d{2},\d+ \w+ [\w.]+: (.*)$", line)
     if not m:
         return line

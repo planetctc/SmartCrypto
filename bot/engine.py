@@ -212,7 +212,9 @@ class Engine:
             t = self.trades.pop(sym)
             px = self.broker.price(sym)
             sign = 1 if t.side == "long" else -1
-            pnl = sign * (px - (t.avg_entry or t.entry)) * t.qty + t.realized
+            avg = t.avg_entry or t.entry
+            fees = self.cfg.fees.taker * (avg + px) * t.qty
+            pnl = sign * (px - avg) * t.qty - fees + t.realized
             log.info("%s position gone (exchange stop/TP), approx pnl %.2f", sym, pnl)
             self.risk.record_close(now, sym, pnl, pnl < 0, self.tf_ms)
 
@@ -251,7 +253,9 @@ class Engine:
 
     def _try_open(self, sym, sig, now, positions) -> None:
         equity, free = self._balance()
-        ok, why = self.risk.can_open(now, sym, len(positions) + len(self.pending), equity)
+        # positions was read at the start of this loop: count trades opened since then too
+        busy = len(positions.keys() | self.trades.keys()) + len(self.pending)
+        ok, why = self.risk.can_open(now, sym, busy, equity)
         if not ok:
             log.info("%s signal skipped: %s", sym, why)
             return
@@ -371,7 +375,7 @@ class Engine:
             t.realized += gain
             t.qty -= q
             # 移动止损: once a take-profit is in, the rest can no longer turn into a loss
-            be = t.entry * (1 + sign * 2 * cost)
+            be = self._round(sym, t.entry * (1 + sign * 2 * cost), "short" if sign > 0 else "long")
             if sign * (be - t.stop) > 0:
                 t.stop = be
             log.info("PARTIAL %s %s qty=%s @ %.10g (take-profit %.10g) gain %.2f, stop now %.10g",
