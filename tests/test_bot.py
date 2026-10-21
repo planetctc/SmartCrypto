@@ -500,3 +500,12 @@ def test_backtest_scale_in_happens_and_losses_stay_bounded():
     assert (trades.adds > 0).any()
     assert stats.get("liquidations", 0) == 0
     assert trades.pnl.min() > -(c.risk.max_loss_per_trade_usd * 1.5)
+
+
+def test_cross_margin_param_per_account_type():
+    # unified (UTA) order endpoint rejects "cross" (Bitget 40034) and wants "crossed"
+    assert _broker_with_balance({}, uta=True).order_margin_mode == "crossed"
+    assert _broker_with_balance({}, uta=False).order_margin_mode == "cross"   # ccxt maps it
+    b = _broker_with_balance({}, uta=True)
+    b.cfg.margin_mode = "isolated"
+    assert b.order_margin_mode == "isolated"

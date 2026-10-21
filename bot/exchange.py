@@ -76,6 +76,12 @@ class BitgetBroker:
                  "demo" if demo else "LIVE")
         self.lev: dict[str, int] = {}
 
+    @property
+    def order_margin_mode(self) -> str:
+        """Margin mode as the order endpoint wants it: the unified (UTA) endpoint gets the raw
+        value and only knows "crossed", while ccxt translates "cross" for classic accounts."""
+        return "crossed" if self.uta and self.cfg.margin_mode == "cross" else self.cfg.margin_mode
+
     # ----- setup -----
     def leverage_for(self, symbol: str) -> int:
         return self.lev.get(symbol, self.cfg.leverage)
@@ -205,7 +211,7 @@ class BitgetBroker:
         """Market entry with stop-loss and take-profit attached on the exchange, so they
         still fire if this program crashes or loses connection."""
         params = {
-            "marginMode": self.cfg.margin_mode,
+            "marginMode": self.order_margin_mode,
             "hedged": False,
             "stopLoss": {"triggerPrice": float(self.ex.price_to_precision(symbol, stop))},
             "takeProfit": {"triggerPrice": float(self.ex.price_to_precision(symbol, tp))},
@@ -224,7 +230,7 @@ class BitgetBroker:
         if the price has already moved through. Stop-loss / take-profit are attached the same
         way as market entries."""
         params = {
-            "marginMode": self.cfg.margin_mode,
+            "marginMode": self.order_margin_mode,
             "hedged": False,
             "postOnly": True,
             "stopLoss": {"triggerPrice": float(self.ex.price_to_precision(symbol, stop))},
@@ -249,14 +255,14 @@ class BitgetBroker:
     def close(self, symbol: str, pos: Position) -> float:
         side = "sell" if pos.side == "long" else "buy"
         order = self.ex.create_order(symbol, "market", side, pos.qty, None,
-                                     {"marginMode": self.cfg.margin_mode, "hedged": False, "reduceOnly": True})
+                                     {"marginMode": self.order_margin_mode, "hedged": False, "reduceOnly": True})
         self.cancel_triggers(symbol)
         return float(order.get("average") or order.get("price") or self.price(symbol))
 
     def reduce(self, symbol: str, side: str, qty: float) -> float:
         """Close part of a position (分批止盈 / 平加仓) and keep the exchange stop/TP."""
         order = self.ex.create_order(symbol, "market", "sell" if side == "long" else "buy", qty,
-                                     None, {"marginMode": self.cfg.margin_mode, "hedged": False,
+                                     None, {"marginMode": self.order_margin_mode, "hedged": False,
                                             "reduceOnly": True})
         return float(order.get("average") or order.get("price") or self.price(symbol))
 
