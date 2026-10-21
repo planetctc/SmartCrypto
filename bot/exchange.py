@@ -67,8 +67,39 @@ class BitgetBroker:
         if demo:
             self.ex.set_sandbox_mode(True)  # sends PAPTRADING: 1 -> Bitget demo account
         self.ex.load_markets()
+        # Bitget has classic futures accounts and unified (UTA) accounts; ccxt picks the API
+        self.uta = bool(self.ex.handle_uta_and_params({}, "setLeverage", False)[0])
+        log.info("Bitget %s account (%s)", "unified/UTA" if self.uta else "classic futures",
+                 "demo" if demo else "LIVE")
+        self.lev: dict[str, int] = {}
 
     # ----- setup -----
+    def leverage_for(self, symbol: str) -> int:
+        return self.lev.get(symbol, self.cfg.leverage)
+
+    def _leverage_steps(self, symbol: str) -> list[int]:
+        want = self.cfg.leverage
+        max_lev = (self.ex.market(symbol).get("limits", {}).get("leverage", {}) or {}).get("max")
+        steps = {want, 75, 50, 25, 20, 10, 5}
+        if max_lev:
+            steps.add(int(max_lev))
+        return sorted((s for s in steps if s <= want and (not max_lev or s <= max_lev)), reverse=True)
+
+    def _set_leverage(self, symbol: str, lev: int) -> None:
+        if self.uta:
+            try:
+                self.ex.set_leverage(lev, symbol)
+                return
+            except ccxt.ExchangeError as e:
+                if "25223" in str(e) or "Max" in str(e):
+                    raise
+                log.info("set leverage without side failed (%s), trying per side", e)
+            for side in ("long", "short"):
+                self.ex.set_leverage(lev, symbol, {"posSide": side})
+        else:
+            for side in ("long", "short"):
+                self.ex.set_leverage(lev, symbol, {"holdSide": side})
+
     def setup_symbol(self, symbol: str) -> None:
         try:
             self.ex.set_position_mode(False, symbol)  # one-way mode
@@ -78,8 +109,22 @@ class BitgetBroker:
             self.ex.set_margin_mode("isolated", symbol)
         except ccxt.ExchangeError as e:
             log.info("margin mode unchanged for %s: %s", symbol, e)
-        for hold in ("long", "short"):
-            retry(self.ex.set_leverage, self.cfg.leverage, symbol, {"holdSide": hold})
+        last_err = None
+        for lev in self._leverage_steps(symbol):
+            try:
+                self._set_leverage(symbol, lev)
+                self.lev[symbol] = lev
+                if lev != self.cfg.leverage:
+                    log.warning("%s max leverage is below %sx, using %sx", symbol,
+                                self.cfg.leverage, lev)
+                else:
+                    log.info("%s leverage %sx", symbol, lev)
+                return
+            except ccxt.ExchangeError as e:
+                last_err = e
+                if "25223" not in str(e) and "Max" not in str(e):
+                    raise
+        raise SystemExit(f"{symbol}: could not set any leverage: {last_err}")
 
     # ----- market data -----
     def ohlcv(self, symbol: str, tf: str, limit: int) -> pd.DataFrame:
@@ -204,6 +249,9 @@ class PaperBroker:
 
     def setup_symbol(self, symbol: str) -> None:
         pass
+
+    def leverage_for(self, symbol: str) -> int:
+        return self.cfg.leverage
 
     def ohlcv(self, symbol, tf, limit):
         return candles_to_df(retry(self.ex.fetch_ohlcv, symbol, tf, None, limit), tf, self.now_ms())

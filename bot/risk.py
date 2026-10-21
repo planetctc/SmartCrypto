@@ -126,20 +126,22 @@ class RiskManager:
         return True, "ok"
 
     def size(self, entry: float, stop: float, side: str, strength: float,
-             free_balance: float, equity: float) -> tuple[Sizing | None, str]:
+             free_balance: float, equity: float,
+             leverage: int | None = None) -> tuple[Sizing | None, str]:
         """Turn a signal into a position size, or reject it with a reason."""
         cfg, r = self.cfg, self.r
+        lev = leverage or cfg.leverage
         stop_pct = abs(entry - stop) / entry
         if stop_pct < r.min_stop_pct * 0.999:
             return None, f"stop {stop_pct:.3%} closer than min {r.min_stop_pct:.3%}"
         if stop_pct > r.max_stop_pct * 1.001:
             return None, f"stop {stop_pct:.3%} wider than max {r.max_stop_pct:.3%}"
 
-        liq = liquidation_price(entry, side, cfg.leverage, r.maintenance_margin_rate)
+        liq = liquidation_price(entry, side, lev, r.maintenance_margin_rate)
         liq_dist = abs(entry - liq) / entry
         if stop_pct + r.liq_buffer_pct > liq_dist:
             return None, (f"stop {stop_pct:.3%} too close to liquidation {liq_dist:.3%} "
-                          f"at {cfg.leverage}x")
+                          f"at {lev}x")
 
         strength = min(1.0, max(0.0, strength))
         margin = cfg.min_margin_usd + (cfg.max_margin_usd - cfg.min_margin_usd) * strength
@@ -149,13 +151,13 @@ class RiskManager:
 
         # cap loss per trade and keep inside what is left of today's loss budget
         loss_cap = min(r.max_loss_per_trade_usd, self.daily_loss_budget_left(equity))
-        if margin * cfg.leverage * cost_pct > loss_cap:
-            margin = loss_cap / (cfg.leverage * cost_pct)
+        if margin * lev * cost_pct > loss_cap:
+            margin = loss_cap / (lev * cost_pct)
         margin = min(margin, free_balance * 0.95)
         if margin < cfg.min_margin_usd * 0.999:
             return None, f"margin {margin:.2f} below min {cfg.min_margin_usd} after risk caps"
 
-        notional = margin * cfg.leverage
+        notional = margin * lev
         return Sizing(
             margin=margin,
             notional=notional,

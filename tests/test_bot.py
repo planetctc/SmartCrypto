@@ -326,3 +326,29 @@ def test_capital_usd_makes_big_demo_account_act_like_100(tmp_path):
     b.now += 1000
     e.step()
     assert not b.pos                                    # 30% daily limit fired
+
+
+def test_bitget_leverage_falls_back_to_symbol_max():
+    import ccxt
+    from bot.exchange import BitgetBroker
+
+    class FakeEx:
+        def __init__(self):
+            self.calls = []
+        def market(self, s):
+            return {"limits": {"leverage": {"max": 50}}}
+        def set_position_mode(self, *a): pass
+        def set_margin_mode(self, *a): pass
+        def set_leverage(self, lev, s, params=None):
+            self.calls.append(lev)
+            if lev > 50:
+                raise ccxt.ExchangeError('bitget {"code":"25223","msg":"Exceeds Max. leverage"}')
+
+    b = BitgetBroker.__new__(BitgetBroker)
+    b.cfg, b.ex, b.uta, b.lev = cfg(), FakeEx(), True, {}
+    b.setup_symbol("DOGE/USDT:USDT")
+    assert b.leverage_for("DOGE/USDT:USDT") == 50 and b.ex.calls[0] == 50
+    b.ex.market = lambda s: {"limits": {"leverage": {"max": None}}}
+    b.ex.calls.clear()
+    b.setup_symbol("XRP/USDT:USDT")
+    assert b.ex.calls[:2] == [100, 75] and b.leverage_for("XRP/USDT:USDT") == 50

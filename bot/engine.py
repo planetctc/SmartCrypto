@@ -239,7 +239,8 @@ class Engine:
             price = min(price, sig.entry) if sig.side == "long" else max(price, sig.entry)
         stop = price - sign * dist
         tp = price + sign * dist * self.cfg.strategy.reward_risk
-        sizing, why = self.risk.size(price, stop, sig.side, sig.strength, free, equity)
+        lev = self.broker.leverage_for(sym) if hasattr(self.broker, "leverage_for") else None
+        sizing, why = self.risk.size(price, stop, sig.side, sig.strength, free, equity, lev)
         if sizing is None:
             log.info("%s signal skipped: %s", sym, why)
             return
