@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import math
+
 import numpy as np
 import pandas as pd
 
 from .config import Config
-from .risk import liquidation_price
 
 TF_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
          "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000}
@@ -91,7 +92,7 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
     stop_dist = max(a * s.atr_stop_mult, close * r.min_stop_pct)
     sign = 1 if side == "long" else -1
     stop = close - sign * stop_dist
-    tp = close + sign * stop_dist * s.reward_risk
+    tp = close + sign * stop_dist * s.take_profit_r[-1]
 
     trend_dist = abs(row["trend_close"] - row["trend_ema"]) / row["trend_ema"]
     strength = float(np.mean([
@@ -133,42 +134,55 @@ def manage_position(side: str, entry: float, stop: float, initial_stop: float, p
 
     if sign * (price - new_stop) <= 0:
         return ExitDecision(True, "managed stop hit", new_stop)
-    # with pyramiding on, a trade whose stop is already locked in profit is left to the trail
-    locked = s.pyramid_max_adds > 0 and sign * (new_stop - entry) > 0
+    # a trade whose stop is already locked in profit is left to the trailing stop
+    locked = sign * (new_stop - entry) > 0
     if bars_held >= s.max_hold_bars and not locked:
         return ExitDecision(True, "max hold time", new_stop)
     return ExitDecision(False, "", new_stop if new_stop != stop else None)
 
 
-def pyramid_add_qty(side: str, first_entry: float, initial_stop: float, stop: float,
-                    avg_entry: float, qty: float, base_qty: float, adds: int, last_add: float,
-                    price: float, leverage: float, cfg: Config) -> float:
-    """平加仓: how much to add to a winning position right now (0 = don't add).
 
-    Only adds once the managed stop sits past break-even, and only every pyramid_step_r
-    initial risks of further progress. The add is shrunk so that if the stop is hit the whole
-    position (fees included) loses at most pyramid_max_risk_usd, and so that the new average
-    entry keeps the liquidation price behind the stop.
+def round_step(price: float) -> float:
+    """Size of a 'round number' for this price: 100 for BTC ~80000, 10 for ETH ~2400,
+    0.1 for SOL ~150, 0.001 for XRP ~1.3, 0.0001 for DOGE ~0.15 (kept under 0.5% of price
+    so it never moves a stop by much)."""
+    step = 10.0 ** (math.floor(math.log10(price)) - 2)
+    return step / 10 if step / price > 0.005 else step
+
+
+def off_round(price: float, side: str, kind: str) -> float:
+    """Keep stops and take-profits off round numbers, where everyone else's orders sit.
+
+    Stop: just beyond the round level it is on or near (60700 -> 60675 for a long), so a
+    sweep of the round number does not take us out. Take-profit: just before the nearest
+    round level (61800 -> 61765 for a long), so it fills before price stalls there.
     """
-    s, r = cfg.strategy, cfg.risk
-    if adds >= s.pyramid_max_adds:
-        return 0.0
+    step = round_step(price)
     sign = 1 if side == "long" else -1
-    risk = abs(first_entry - initial_stop)
-    if sign * (stop - first_entry) <= 0 or sign * (price - last_add) < s.pyramid_step_r * risk:
-        return 0.0
+    if kind == "stop":
+        level = (math.floor if side == "long" else math.ceil)(price / step) * step
+        if abs(price - level) < 0.3 * step:
+            return level - sign * 0.25 * step
+        return price
+    level = round(price / step) * step
+    return level - sign * 0.35 * step
 
-    cost = cfg.fees.taker + cfg.fees.slippage  # adds and exits are market orders
-    pnl_now = sign * (stop - avg_entry) * qty - cost * (avg_entry + stop) * qty
-    per_unit = sign * (price - stop) + cost * (price + stop)
-    add = min(base_qty * s.pyramid_add_frac, (pnl_now + s.pyramid_max_risk_usd) / per_unit)
 
-    for _ in range(10):
-        if add <= 0:
-            return 0.0
-        avg = (avg_entry * qty + price * add) / (qty + add)
-        liq = liquidation_price(avg, side, leverage, r.maintenance_margin_rate)
-        if sign * (stop - liq) >= r.liq_buffer_pct * price:
-            return add
-        add /= 2
-    return 0.0
+@dataclass
+class TradePlan:
+    stop: float
+    add_price: float          # 补仓 here (equal to entry when scale-in is off)
+    take_profits: list[float]  # partial levels first, the exchange take-profit last
+
+
+def trade_plan(side: str, entry: float, stop_dist: float, cfg: Config) -> TradePlan:
+    """Stop, 补仓 price and take-profit ladder for a new trade, all from the stop distance."""
+    s = cfg.strategy
+    sign = 1 if side == "long" else -1
+    stop = entry - sign * stop_dist
+    tps = [entry + sign * stop_dist * r for r in s.take_profit_r]
+    if s.avoid_round_numbers:
+        stop = off_round(stop, side, "stop")
+        tps = [off_round(tp, side, "tp") for tp in tps]
+    add = entry - sign * stop_dist * s.scale_in_at_r if s.scale_in_frac < 1 else entry
+    return TradePlan(stop, add, tps)

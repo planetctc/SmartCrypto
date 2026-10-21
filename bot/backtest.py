@@ -6,14 +6,14 @@ that opens beyond the stop fills at that worse open price (gap). Funding fees ar
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 
 from .config import Config
 from .risk import RiskManager, effective_leverage, liquidation_price
-from .strategy import TF_MS, manage_position, prepare, pyramid_add_qty, signal_at
+from .strategy import TF_MS, manage_position, prepare, signal_at, trade_plan
 
 
 def resample(df: pd.DataFrame, tf: str) -> pd.DataFrame:
@@ -41,9 +41,16 @@ class BtPos:
     opened_i: int
     opened_ts: int
     first_entry: float = 0.0
-    base_qty: float = 0.0
+    add_price: float = 0.0     # 补仓 level (0 = none planned)
+    add_plan: float = 0.0
+    add_qty: float = 0.0
+    add_fill: float = 0.0
+    add_state: str = ""        # "" waiting, "open" after 补仓, "done" after 平加仓
     adds: int = 0
-    last_add: float = 0.0
+    tps: list = field(default_factory=list)
+    tp_qtys: list = field(default_factory=list)
+    realized: float = 0.0      # partial-close profit, fees included (already in cash)
+    planned_margin: float = 0.0  # margin of both batches together, as sized
 
 
 def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: float = 100.0):
@@ -75,36 +82,61 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
             fill = px * (1 - sign * slip)
             pnl = sign * (fill - p.entry) * p.qty - fee * fill * p.qty
         cash += pnl
+        pnl += p.realized
         risk.record_close(ts, sym, pnl, pnl < 0 and why in ("stop", "managed stop hit"), step)
         trades.append({"symbol": sym, "side": p.side, "open_time": p.opened_ts, "close_time": ts,
-                       "entry": p.entry, "exit": fill, "qty": p.qty, "margin": p.margin,
+                       "entry": p.entry, "exit": fill, "qty": p.qty, "margin": p.planned_margin,
                        "pnl": pnl - p.entry_fee,  # include the opening fee
                        "fees": p.entry_fee + (0.0 if why == "liquidated" else fee * fill * p.qty),
                        "reason": why, "bars": i - p.opened_i, "adds": p.adds})
 
-    def add_to(p, close):
-        """平加仓 at this bar's close with a market order, same rules as live."""
+    def scale(p, sym, row, i):
+        """补仓 / 平加仓 / 分批止盈 inside one bar, same rules as live. Adverse moves are
+        assumed to come first, and nothing favourable counts on the bar of a 补仓."""
         nonlocal cash
         sign = 1 if p.side == "long" else -1
-        most = (p.qty + p.base_qty * cfg.strategy.pyramid_add_frac) * close
-        q = pyramid_add_qty(p.side, p.first_entry, p.initial_stop, p.stop, p.entry, p.qty,
-                            p.base_qty, p.adds, p.last_add, close,
-                            effective_leverage(cfg, most, cash, cfg.leverage), cfg)
-        if q <= 0:
-            return
-        fill = close * (1 + sign * slip)
-        margin = q * fill / cfg.leverage
-        if margin > cash - sum(x.margin for x in pos.values()):
-            return
-        cash -= fee * q * fill
-        p.entry_fee += fee * q * fill
-        p.entry = (p.entry * p.qty + fill * q) / (p.qty + q)
-        p.qty += q
-        p.margin += margin
-        lev = effective_leverage(cfg, p.entry * p.qty, cash, cfg.leverage)
-        p.liq = liquidation_price(p.entry, p.side, lev, cfg.risk.maintenance_margin_rate)
-        p.adds += 1
-        p.last_add = fill
+        adverse, favorable = (row["low"], row["high"]) if p.side == "long" else \
+            (row["high"], row["low"])
+        cost = fee + slip
+        if (p.add_plan > 0 and not p.add_state and p.stop == p.initial_stop
+                and sign * (adverse - p.add_price) <= 0):
+            fill = p.add_price * (1 + sign * slip)
+            cash -= fee * fill * p.add_plan
+            p.entry_fee += fee * fill * p.add_plan
+            p.entry = (p.entry * p.qty + fill * p.add_plan) / (p.qty + p.add_plan)
+            p.qty += p.add_plan
+            p.margin += fill * p.add_plan / cfg.leverage
+            p.add_qty, p.add_fill, p.add_state, p.adds = p.add_plan, fill, "open", 1
+            lev = effective_leverage(cfg, p.entry * p.qty, cash, cfg.leverage)
+            p.liq = liquidation_price(p.entry, p.side, lev, cfg.risk.maintenance_margin_rate)
+            return True
+        if p.add_state == "open":
+            level = p.entry * (1 + sign * 2 * cost)
+            if sign * (favorable - level) >= 0:
+                gain = sign * (level - p.add_fill) * p.add_qty - cost * (level + p.add_fill) * p.add_qty
+                cash += gain + fee * p.add_fill * p.add_qty  # entry fee was paid already
+                p.realized += gain
+                p.qty -= p.add_qty
+                p.entry_fee -= fee * p.add_fill * p.add_qty
+                p.margin -= p.add_fill * p.add_qty / cfg.leverage
+                p.entry = p.first_entry
+                p.add_qty, p.add_state = 0.0, "done"
+            return False
+        while p.tps and sign * (favorable - p.tps[0]) >= 0:
+            level, q = p.tps.pop(0), min(p.tp_qtys.pop(0), p.qty)
+            if q <= 0 or q >= p.qty:
+                continue
+            fill = level * (1 - sign * slip)
+            gain = sign * (fill - p.entry) * q - fee * fill * q
+            cash += gain
+            p.realized += gain - p.entry_fee * q / p.qty
+            p.entry_fee -= p.entry_fee * q / p.qty
+            p.margin -= p.margin * q / p.qty
+            p.qty -= q
+            be = p.first_entry * (1 + sign * 2 * cost)
+            if sign * (be - p.stop) > 0:
+                p.stop = be
+        return False
 
     for i, ts in enumerate(timeline):
         # 1) fill pending entries at this bar's open
@@ -135,21 +167,26 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
                 if sign * (fill - sig.entry) > 0.5 * dist:
                     continue
                 entry_fee = fee
-            stop = fill - sign * dist
-            tp = fill + sign * dist * cfg.strategy.reward_risk
+            plan = trade_plan(sig.side, fill, dist, cfg)
+            stop, tp = plan.stop, plan.take_profits[-1]
             used = sum(p.margin for p in pos.values())
             sizing, _ = risk.size(fill, stop, sig.side, sig.strength, cash - used, equity)
             if sizing is None:
                 continue
-            cash -= entry_fee * sizing.notional
+            st = cfg.strategy
+            qty = sizing.qty * st.scale_in_frac
+            cash -= entry_fee * fill * qty
             risk.record_open()
-            pos[sym] = BtPos(sig.side, sizing.qty, fill, stop, stop, tp, fill,
+            pos[sym] = BtPos(sig.side, qty, fill, stop, stop, tp, fill,
                              liquidation_price(fill, sig.side,
                                                effective_leverage(cfg, sizing.notional, equity,
                                                                   cfg.leverage),
                                                cfg.risk.maintenance_margin_rate),
-                             sizing.margin, entry_fee * sizing.notional, i, ts,
-                             fill, sizing.qty, 0, fill)
+                             sizing.margin * st.scale_in_frac, entry_fee * fill * qty, i, ts,
+                             fill, plan.add_price if st.scale_in_frac < 1 else 0.0,
+                             sizing.qty - qty, tps=plan.take_profits[:-1],
+                             tp_qtys=[qty * f for f in st.take_profit_split],
+                             planned_margin=sizing.margin)
 
         # 2) manage open positions against this bar's range
         for sym in list(pos):
@@ -159,6 +196,8 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
             sign = 1 if p.side == "long" else -1
             o, h, l, c = row["open"], row["high"], row["low"], row["close"]
             adverse, favorable = (l, h) if p.side == "long" else (h, l)
+            added = sign * (o - p.liq) > 0 and sign * (o - p.stop) > 0 and \
+                not (maker and p.opened_i == i) and scale(p, sym, row, i)
             if sign * (o - p.liq) <= 0:
                 close_pos(sym, p.liq, ts, "liquidated", i)
             elif sign * (o - p.stop) <= 0:
@@ -166,11 +205,11 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
             elif sign * (adverse - p.stop) <= 0:
                 why = "stop" if p.stop == p.initial_stop else "managed stop hit"
                 close_pos(sym, p.stop, ts, why, i)
-            elif maker and p.opened_i == i:
+            elif added or (maker and p.opened_i == i):
                 # maker fill bar: we can't know if the high/low that would count for us came
                 # before or after the fill, so only the stop is checked on this bar
                 continue
-            elif sign * (favorable - p.tp) >= 0:
+            elif sign * (favorable - p.tp) >= 0 and p.add_state != "open":
                 close_pos(sym, p.tp, ts, "take-profit", i)
             else:
                 p.best = max(p.best, h) if p.side == "long" else min(p.best, l)
@@ -180,8 +219,6 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
                     p.stop = d.new_stop
                 if d.close:
                     close_pos(sym, c, ts, d.reason, i)
-                elif cfg.strategy.pyramid_max_adds:
-                    add_to(p, c)
 
         # 3) equity, daily loss limit
         upnl = 0.0

@@ -165,11 +165,16 @@ def friendly(line: str) -> str:
     if r := re.match(r"OPEN (\S+) (long|short) qty=\S+ @ (\S+) stop=(\S+) tp=(\S+) margin≈(\S+)", msg):
         return (f"{t}  {coin(r[1])} 市价开仓{side(r[2])} @ {r[3]}，保证金 {r[6]}，"
                 f"止损 {r[4]}，止盈 {r[5]}")
-    if r := re.match(r"ADD (\S+) (long|short) qty=\S+ @ (\S+) -> total qty=\S+ avg=(\S+) stop=(\S+) \(add (\d+)\)", msg):
-        return (f"{t}  {coin(r[1])} 第 {r[6]} 次加仓{side(r[2])} @ {r[3]}，平均成本 {r[4]}，"
-                f"止损已在 {r[5]}")
-    if r := re.match(r"(\S+) add skipped: not enough free margin", msg):
-        return f"{t}  {coin(r[1])} 想加仓但保证金不够，没加"
+    if r := re.match(r"ADD (\S+) (long|short) qty=\S+ @ (\S+) -> total qty=\S+ avg=(\S+)", msg):
+        return f"{t}  {coin(r[1])} 补仓{side(r[2])} @ {r[3]}，新的平均成本 {r[4]}"
+    if r := re.match(r"REDUCE (\S+) \S+ qty=\S+ @ (\S+) back at cost, gain (\S+)", msg):
+        return f"{t}  {coin(r[1])} 回到成本，平掉补仓的部分 @ {r[2]}，约 {float(r[3]):+.2f} USDT"
+    if r := re.match(r"PARTIAL (\S+) \S+ qty=\S+ @ (\S+) \(take-profit \S+\) gain (\S+), stop now (\S+)", msg):
+        return (f"{t}  {coin(r[1])} 分批止盈，平掉一部分 @ {r[2]}，约 {float(r[3]):+.2f} USDT，"
+                f"止损移到 {r[4]}")
+    if r := re.match(r"PLAN (\S+) add=(\S+) @ (\S+) take-profits=(\S+)", msg):
+        add = f"到 {r[3]} 补仓，" if float(r[2]) > 0 else ""
+        return f"{t}  {coin(r[1])} 计划：{add}分批止盈 {r[4].replace('/', ' / ')}"
     if r := re.match(r"FILLED (\S+) (long|short) qty=\S+ @ (\S+)", msg):
         return f"{t}  {coin(r[1])} 挂单成交，开仓{side(r[2])} @ {r[3]}"
     if r := re.match(r"(\S+) maker entry \S+ (not filled|cancelled)", msg):
@@ -412,7 +417,8 @@ class Panel(tk.Tk):
         self.log.delete("1.0", "end")
         for line in lines:
             tag = "muted"
-            if " OPEN " in line or " FILLED " in line or " MAKER " in line:
+            if any(k in line for k in (" OPEN ", " FILLED ", " MAKER ", " ADD ", " PLAN ",
+                                        " REDUCE ", " PARTIAL ")):
                 tag = "info"
             pm = PNL_RE.search(line)
             if pm:

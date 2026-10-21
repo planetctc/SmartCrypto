@@ -5,13 +5,13 @@ import json
 import logging
 import math
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from .config import Config
 from .exchange import Position
-from .risk import RiskManager, RiskState, effective_leverage
-from .strategy import TF_MS, manage_position, prepare, pyramid_add_qty, signal_at
+from .risk import RiskManager, RiskState
+from .strategy import TF_MS, manage_position, prepare, signal_at, trade_plan
 
 log = logging.getLogger("bot.engine")
 
@@ -28,10 +28,15 @@ class Trade:
     take_profit: float
     best: float
     opened_ms: int
-    avg_entry: float = 0.0   # average entry after adds (0 = same as entry)
-    base_qty: float = 0.0    # size of the first entry (0 = same as qty)
-    adds: int = 0
-    last_add: float = 0.0    # price of the latest add (0 = entry)
+    avg_entry: float = 0.0    # average entry while the 补仓 batch is open (0 = entry)
+    add_price: float = 0.0    # 分批进场: 补仓 when price reaches this (0 = no second batch)
+    add_plan: float = 0.0     # qty of the second batch
+    add_qty: float = 0.0      # qty of the second batch that is open now
+    add_fill: float = 0.0
+    add_state: str = ""       # "" = waiting, "open" = 补仓 done, "done" = 平加仓 done
+    tps: list = field(default_factory=list)      # 分批止盈 levels still to hit (exchange has the last)
+    tp_qtys: list = field(default_factory=list)  # qty to close at each of those levels
+    realized: float = 0.0     # profit already taken from partial closes
 
 
 @dataclass
@@ -43,6 +48,7 @@ class PendingEntry:
     stop: float
     take_profit: float
     expires_ms: int
+    plan: dict = field(default_factory=dict)  # 补仓 / 分批止盈 settings for the Trade
 
 
 class Engine:
@@ -62,8 +68,10 @@ class Engine:
         if not self.state_path.exists():
             return RiskState()
         d = json.loads(self.state_path.read_text())
-        self.trades = {k: Trade(**v) for k, v in d.get("trades", {}).items()}
-        self.pending = {k: PendingEntry(**v) for k, v in d.get("pending", {}).items()}
+        known = lambda cls, v: cls(**{k: x for k, x in v.items()  # noqa: E731
+                                      if k in {f.name for f in fields(cls)}})
+        self.trades = {k: known(Trade, v) for k, v in d.get("trades", {}).items()}
+        self.pending = {k: known(PendingEntry, v) for k, v in d.get("pending", {}).items()}
         return RiskState.from_dict(d.get("risk", {}))
 
     def _save_state(self) -> None:
@@ -177,7 +185,7 @@ class Engine:
             return
         self.risk.record_open()
         self.trades[sym] = Trade(pe.side, pos.qty, pos.entry, pe.stop, pe.stop, pe.take_profit,
-                                 pos.entry, now)
+                                 pos.entry, now, **pe.plan)
         log.info("FILLED %s %s qty=%s @ %.10g stop=%.10g tp=%.10g",
                  sym, pe.side, pos.qty, pos.entry, pe.stop, pe.take_profit)
         self._liq_safety(sym, pos, pe.stop, now)
@@ -204,7 +212,7 @@ class Engine:
             t = self.trades.pop(sym)
             px = self.broker.price(sym)
             sign = 1 if t.side == "long" else -1
-            pnl = sign * (px - (t.avg_entry or t.entry)) * t.qty
+            pnl = sign * (px - (t.avg_entry or t.entry)) * t.qty + t.realized
             log.info("%s position gone (exchange stop/TP), approx pnl %.2f", sym, pnl)
             self.risk.record_close(now, sym, pnl, pnl < 0, self.tf_ms)
 
@@ -216,9 +224,9 @@ class Engine:
         fill = self.broker.close(sym, p)
         sign = 1 if p.side == "long" else -1
         fees = 2 * self.cfg.fees.taker * p.entry * p.qty
-        pnl = sign * (fill - p.entry) * p.qty - fees
+        t = self.trades.pop(sym, None)
+        pnl = sign * (fill - p.entry) * p.qty - fees + (t.realized if t else 0.0)
         log.info("CLOSE %s %s qty=%s @ %.10g (%s) pnl≈%.2f", sym, p.side, p.qty, fill, why, pnl)
-        self.trades.pop(sym, None)
         stopped = pnl < 0 and why != "max hold time"
         self.risk.record_close(now, sym, pnl, stopped, self.tf_ms)
 
@@ -255,37 +263,51 @@ class Engine:
             return
         maker = self.cfg.entry_order == "maker"
         if maker:  # rest at the signal close, never on the wrong side of the market
-            price = min(price, sig.entry) if sig.side == "long" else max(price, sig.entry)
-        if maker:
-            price = self._round(sym, price, sig.side)
-        stop = self._round(sym, price - sign * dist, sig.side)
-        tp = self._round(sym, price + sign * dist * self.cfg.strategy.reward_risk, sig.side)
+            price = self._round(sym, min(price, sig.entry) if sig.side == "long"
+                                else max(price, sig.entry), sig.side)
+        plan = trade_plan(sig.side, price, dist, self.cfg)
+        stop = self._round(sym, plan.stop, sig.side)
+        tps = [self._round(sym, x, sig.side) for x in plan.take_profits]
+        tp = tps[-1]
         lev = self.broker.leverage_for(sym) if hasattr(self.broker, "leverage_for") else None
         sizing, why = self.risk.size(price, stop, sig.side, sig.strength, free, equity, lev)
         if sizing is None:
             log.info("%s signal skipped: %s", sym, why)
             return
-        qty = self.broker.round_qty(sym, sizing.qty)
+        # 分批进场: open the first batch now, keep the rest for the 补仓 price
+        s = self.cfg.strategy
+        qty = self.broker.round_qty(sym, sizing.qty * s.scale_in_frac)
         if qty <= 0:
             log.info("%s signal skipped: size below exchange minimum", sym)
             return
+        add = self.broker.round_qty(sym, sizing.qty - qty) if s.scale_in_frac < 1 else 0.0
+        extra = {"add_price": self._round(sym, plan.add_price, sig.side) if add > 0 else 0.0,
+                 "add_plan": add, "tps": tps[:-1],
+                 "tp_qtys": [self.broker.round_qty(sym, qty * f) for f in s.take_profit_split]}
+        margin = sizing.margin * qty / sizing.qty
 
         if maker:
             oid = self.broker.open_maker(sym, sig.side, qty, price, stop, tp)
             self.pending[sym] = PendingEntry(oid, sig.side, qty, price, stop, tp,
-                                             now + self.cfg.maker_timeout_seconds * 1000)
+                                             now + self.cfg.maker_timeout_seconds * 1000, extra)
             log.info("MAKER %s %s qty=%s @ %.10g stop=%.10g tp=%.10g margin≈%.2f strength=%.2f (%s)",
-                     sym, sig.side, qty, price, stop, tp, sizing.margin, sig.strength, sig.reason)
+                     sym, sig.side, qty, price, stop, tp, margin, sig.strength, sig.reason)
+            self._log_plan(sym, extra, tps)
             return
 
         fill = self.broker.open(sym, sig.side, qty, stop, tp)
         self.risk.record_open()
         log.info("OPEN %s %s qty=%s @ %.10g stop=%.10g tp=%.10g margin≈%.2f strength=%.2f (%s)",
-                 sym, sig.side, qty, fill, stop, tp, sizing.margin, sig.strength, sig.reason)
-        self.trades[sym] = Trade(sig.side, qty, fill, stop, stop, tp, fill, now)
+                 sym, sig.side, qty, fill, stop, tp, margin, sig.strength, sig.reason)
+        self._log_plan(sym, extra, tps)
+        self.trades[sym] = Trade(sig.side, qty, fill, stop, stop, tp, fill, now, **extra)
         pos = self.broker.positions().get(sym)
         if pos:
             self._liq_safety(sym, pos, stop, now)
+
+    def _log_plan(self, sym: str, extra: dict, tps: list[float]) -> None:
+        log.info("PLAN %s add=%s @ %.10g take-profits=%s", sym, extra["add_plan"],
+                 extra["add_price"], "/".join(f"{x:.10g}" for x in tps))
 
     def _manage(self, sym: str, p: Position, now: int) -> None:
         t = self.trades.get(sym)
@@ -311,33 +333,46 @@ class Engine:
             t.stop = d.new_stop
         if d.close:
             self._close(sym, p, now, d.reason)
-        elif self.cfg.strategy.pyramid_max_adds:
-            self._try_add(sym, t, price, now)
+        else:
+            self._scale(sym, t, price)
 
-    def _try_add(self, sym: str, t: Trade, price: float, now: int) -> None:
-        """平加仓: add to a winner whose stop is locked in profit (rules in pyramid_add_qty)."""
-        lev = self.broker.leverage_for(sym) if hasattr(self.broker, "leverage_for") \
-            else self.cfg.leverage
-        avg = t.avg_entry or t.entry
-        equity, free = self._balance()
-        most = (t.qty + (t.base_qty or t.qty) * self.cfg.strategy.pyramid_add_frac) * price
-        q = pyramid_add_qty(t.side, t.entry, t.initial_stop, t.stop, avg, t.qty,
-                            t.base_qty or t.qty, t.adds, t.last_add or t.entry, price,
-                            effective_leverage(self.cfg, most, equity, lev), self.cfg)
-        q = self.broker.round_qty(sym, q) if q > 0 else 0.0
-        if q <= 0:
+    def _scale(self, sym: str, t: Trade, price: float) -> None:
+        """补仓, 平加仓 and 分批止盈 for an open trade (the video's way of trading)."""
+        sign = 1 if t.side == "long" else -1
+        cost = self.cfg.fees.taker + self.cfg.fees.slippage
+        if (t.add_plan > 0 and not t.add_state and t.stop == t.initial_stop
+                and sign * (t.add_price - price) >= 0):
+            # 补仓: price came back into the entry zone, add the second batch, same stop
+            fill = self.broker.open(sym, t.side, t.add_plan, t.stop, t.take_profit)
+            t.avg_entry = (t.entry * t.qty + fill * t.add_plan) / (t.qty + t.add_plan)
+            t.qty += t.add_plan
+            t.add_qty, t.add_fill, t.add_state = t.add_plan, fill, "open"
+            log.info("ADD %s %s qty=%s @ %.10g -> total qty=%s avg=%.10g stop=%.10g",
+                     sym, t.side, t.add_plan, fill, t.qty, t.avg_entry, t.stop)
             return
-        if q * price / lev > free * 0.95:
-            log.info("%s add skipped: not enough free margin", sym)
+        if t.add_state == "open":
+            # 平加仓: back at the new average cost (plus fees), take the 补仓 batch off again
+            if sign * (price - t.avg_entry * (1 + sign * 2 * cost)) < 0:
+                return
+            fill = self.broker.reduce(sym, t.side, t.add_qty)
+            gain = sign * (fill - t.add_fill) * t.add_qty - cost * (fill + t.add_fill) * t.add_qty
+            t.realized += gain
+            t.qty -= t.add_qty
+            t.add_qty, t.avg_entry, t.add_state = 0.0, 0.0, "done"
+            log.info("REDUCE %s %s qty=%s @ %.10g back at cost, gain %.2f",
+                     sym, t.side, t.add_plan, fill, gain)
             return
-        t.base_qty = t.base_qty or t.qty
-        fill = self.broker.open(sym, t.side, q, self._round(sym, t.stop, t.side), t.take_profit)
-        t.avg_entry = (avg * t.qty + fill * q) / (t.qty + q)
-        t.qty += q
-        t.adds += 1
-        t.last_add = fill
-        log.info("ADD %s %s qty=%s @ %.10g -> total qty=%s avg=%.10g stop=%.10g (add %d)",
-                 sym, t.side, q, fill, t.qty, t.avg_entry, t.stop, t.adds)
-        pos = self.broker.positions().get(sym)
-        if pos:
-            self._liq_safety(sym, pos, t.stop, now)
+        while t.tps and sign * (price - t.tps[0]) >= 0:
+            level, q = t.tps.pop(0), min(t.tp_qtys.pop(0), t.qty)
+            if q <= 0 or q >= t.qty:
+                continue
+            fill = self.broker.reduce(sym, t.side, q)
+            gain = sign * (fill - t.entry) * q - cost * (fill + t.entry) * q
+            t.realized += gain
+            t.qty -= q
+            # 移动止损: once a take-profit is in, the rest can no longer turn into a loss
+            be = t.entry * (1 + sign * 2 * cost)
+            if sign * (be - t.stop) > 0:
+                t.stop = be
+            log.info("PARTIAL %s %s qty=%s @ %.10g (take-profit %.10g) gain %.2f, stop now %.10g",
+                     sym, t.side, q, fill, level, gain, t.stop)

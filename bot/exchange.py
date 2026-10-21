@@ -253,6 +253,13 @@ class BitgetBroker:
         self.cancel_triggers(symbol)
         return float(order.get("average") or order.get("price") or self.price(symbol))
 
+    def reduce(self, symbol: str, side: str, qty: float) -> float:
+        """Close part of a position (分批止盈 / 平加仓) and keep the exchange stop/TP."""
+        order = self.ex.create_order(symbol, "market", "sell" if side == "long" else "buy", qty,
+                                     None, {"marginMode": self.cfg.margin_mode, "hedged": False,
+                                            "reduceOnly": True})
+        return float(order.get("average") or order.get("price") or self.price(symbol))
+
     def cancel_triggers(self, symbol: str) -> None:
         for plan in ("profit_loss", "normal_plan"):
             try:
@@ -383,6 +390,15 @@ class PaperBroker:
         px = self.price(symbol)
         self._settle(symbol, px)
         return self._slip(px, pos.side, opening=False)
+
+    def reduce(self, symbol, side, qty):
+        p = self.pos[symbol]
+        fill = self._slip(self.price(symbol), side, opening=False)
+        sign = 1 if side == "long" else -1
+        self.cash += sign * (fill - p.entry) * qty - self._fee(fill * qty)
+        self.pos[symbol] = Position(symbol, side, p.qty - qty, p.entry, p.liq_price, 0.0,
+                                    p.margin * (p.qty - qty) / p.qty)
+        return fill
 
     def cancel_triggers(self, symbol):
         pass
