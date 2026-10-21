@@ -165,6 +165,12 @@ def friendly(line: str) -> str:
         return f"{t}  已连接 Bitget 统一账户"
     if "classic futures account" in msg:
         return f"{t}  已连接 Bitget 合约账户"
+    if r := re.match(r"(\S+) adopted unknown position, managed stop (\S+)", msg):
+        return f"{t}  {coin(r[1])} 发现不是机器人开的仓位，已接管，止损 {r[2]}"
+    if msg.startswith("account balance reads as 0"):
+        return f"{t}  账户余额读到 0"
+    if "账户余额读到 0" in msg:
+        return f"{t}  ⚠ 账户里没有 USDT，机器人不会开单"
     if "loop error" in msg:
         return f"{t}  ⚠ 出错了，会自动重试（看原始记录了解详情）"
     return line

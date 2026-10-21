@@ -275,6 +275,12 @@ class Engine:
 
     def _manage(self, sym: str, p: Position, now: int) -> None:
         t = self.trades.get(sym)
+        if t is None and sym in self.pending:
+            # our maker entry filled before the order status caught up: track it as ours
+            self._on_filled(sym, self.pending.pop(sym), now)
+            t = self.trades.get(sym)
+            if t is None:
+                return
         if t is None:
             # position we did not open (manual or from before a crash): give it a tight managed stop
             sign = 1 if p.side == "long" else -1

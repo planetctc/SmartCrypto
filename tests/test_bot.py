@@ -389,3 +389,18 @@ def test_zero_balance_never_opens_and_keeps_no_baseline(tmp_path):
     e.step()
     assert not b.opened and e.risk.state.equity_baseline == 0
     assert not e.risk.state.killed
+
+
+def test_engine_fast_maker_fill_is_not_adopted_as_unknown(tmp_path):
+    c, b, e = _maker_engine(tmp_path)
+    e.step()
+    pe = e.pending["BTC/USDT:USDT"]
+    # position appears on the exchange while the order still reports "open"
+    o = b.limits["1"]
+    b.pos[o["s"]] = Position(o["s"], o["side"], o["qty"], o["price"],
+                             liquidation_price(o["price"], o["side"], 100, 0.005), 0,
+                             o["price"] * o["qty"] / 100)
+    b.now += 1000
+    e.step()
+    t = e.trades["BTC/USDT:USDT"]
+    assert t.initial_stop == pe.stop and not e.pending
