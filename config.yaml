@@ -10,6 +10,12 @@
 #   live  = 真钱实盘（还需要设置环境变量 I_UNDERSTAND_REAL_MONEY=yes 才会启动）
 mode: demo
 
+# Bitget 账户类型（钱放在哪个账户）:
+#   auto    = 自动判断
+#   classic = 「合约」账户
+#   unified = 「统一账户」
+account_type: auto
+
 symbols:
   - BTC/USDT:USDT
   - ETH/USDT:USDT

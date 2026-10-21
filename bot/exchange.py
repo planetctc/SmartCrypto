@@ -68,6 +68,9 @@ class BitgetBroker:
             self.ex.set_sandbox_mode(True)  # sends PAPTRADING: 1 -> Bitget demo account
         self.ex.load_markets()
         # Bitget has classic futures accounts and unified (UTA) accounts; ccxt picks the API
+        # unless config says which one holds the money
+        if cfg.account_type != "auto":
+            self.ex.options["uta"] = cfg.account_type == "unified"
         self.uta = bool(self.ex.handle_uta_and_params({}, "setLeverage", False)[0])
         log.info("Bitget %s account (%s)", "unified/UTA" if self.uta else "classic futures",
                  "demo" if demo else "LIVE")

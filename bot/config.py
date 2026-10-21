@@ -47,6 +47,7 @@ class FeeConfig:
 @dataclass
 class Config:
     mode: str = "demo"
+    account_type: str = "auto"       # Bitget account: auto, classic (合约账户) or unified (统一账户)
     symbols: list[str] = field(default_factory=lambda: ["BTC/USDT:USDT", "ETH/USDT:USDT"])
     timeframe: str = "5m"
     trend_timeframe: str = "1h"
@@ -87,6 +88,8 @@ def load_config(path: str | Path = "config.yaml") -> Config:
 def validate(cfg: Config) -> None:
     if cfg.mode not in ("paper", "demo", "live"):
         raise ValueError("mode must be paper, demo or live")
+    if cfg.account_type not in ("auto", "classic", "unified"):
+        raise ValueError("account_type must be auto, classic or unified")
     if cfg.entry_order not in ("market", "maker"):
         raise ValueError("entry_order must be market or maker")
     if cfg.margin_mode != "isolated":
