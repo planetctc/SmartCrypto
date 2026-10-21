@@ -1,4 +1,4 @@
-"""smartMonitoring - Bitget USDT-M futures bot.
+"""SmartCrypto - Bitget USDT-M futures bot.
 
 用法:
   python main.py download --days 180            下载历史 K 线
@@ -19,7 +19,7 @@ from pathlib import Path
 
 BANNER = r"""
   ┌──────────────────────────────────────┐
-  │   smartMonitoring  ·  Bitget Futures │
+  │   SmartCrypto  ·  Bitget Futures     │
   └──────────────────────────────────────┘
 """
 
@@ -135,7 +135,7 @@ def force_utf8_output():
 def main():
     force_utf8_output()
     from bot.config import load_config
-    ap = argparse.ArgumentParser(description="smartMonitoring Bitget futures bot")
+    ap = argparse.ArgumentParser(description="SmartCrypto Bitget futures bot")
     ap.add_argument("command", choices=["download", "backtest", "compare", "run"])
     ap.add_argument("--configs", nargs="+", default=["config.yaml", "config_hf.yaml"],
                     help="compare 用的配置文件")

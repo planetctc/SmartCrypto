@@ -1,8 +1,8 @@
 @echo off
 chcp 65001 >nul
-title smartMonitoring - 设置 API key
+title SmartCrypto - 设置 API key
 echo ============================================
-echo   smartMonitoring  设置 Bitget API key
+echo   SmartCrypto  设置 Bitget API key
 echo   只需要做一次，key 会保存在这台电脑上
 echo ============================================
 echo.

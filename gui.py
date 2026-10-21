@@ -1,6 +1,6 @@
-"""smartMonitoring control panel: start/stop the bot, see today's trades and the live log.
+"""SmartCrypto control panel: start/stop the bot, see today's trades and the live log.
 
-Double-click smartMonitoring.bat (Windows) or run: py -3.13 gui.py
+Double-click SmartCrypto.bat (Windows) or run: py -3.13 gui.py
 The bot itself runs as a separate background process, so closing this window can leave it
 running; the panel asks what to do.
 """
@@ -204,7 +204,7 @@ GREEN, RED, AMBER, BLUE = "#22c55e", "#ef4444", "#f59e0b", "#0ea5e9"
 class Panel(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("smartMonitoring")
+        self.title("SmartCrypto")
         self.configure(bg=BG)
         self.geometry("880x640")
         self.minsize(720, 520)
@@ -236,7 +236,7 @@ class Panel(tk.Tk):
                 pass
         titles = tk.Frame(head, bg=BG)
         titles.pack(side="left")
-        self._label(titles, "smartMonitoring", 18, bold=True).pack(anchor="w")
+        self._label(titles, "SmartCrypto", 18, bold=True).pack(anchor="w")
         self.sub = self._label(titles, "", 10, MUTED)
         self.sub.pack(anchor="w")
         self.status = self._label(head, "● 已停止", 13, MUTED, bold=True)
@@ -372,11 +372,11 @@ class Panel(tk.Tk):
     def start(self):
         other = self.other_running()
         if other:
-            messagebox.showwarning("smartMonitoring", f"{other}正在运行。同一个账户一次只跑一种模式，请先停止它。")
+            messagebox.showwarning("SmartCrypto", f"{other}正在运行。同一个账户一次只跑一种模式，请先停止它。")
             return
         log_file, pid_file, mode = self.paths()
         if mode in ("demo", "live") and not all(os.environ.get(k) for k in KEY_VARS):
-            messagebox.showwarning("smartMonitoring", "请先点「设置 API key」。")
+            messagebox.showwarning("SmartCrypto", "请先点「设置 API key」。")
             return
         if mode == "live":
             if not messagebox.askyesno("真钱实盘", "这个配置是真钱实盘（mode: live）。确定要用真钱开始吗？"):
@@ -433,7 +433,7 @@ class Panel(tk.Tk):
         def ok():
             vals = [e.get().strip() for e in entries]
             if not all(vals):
-                messagebox.showwarning("smartMonitoring", "三项都要填。", parent=d)
+                messagebox.showwarning("SmartCrypto", "三项都要填。", parent=d)
                 return
             save_keys(*vals)
             d.destroy()
@@ -444,7 +444,7 @@ class Panel(tk.Tk):
         _, pid_file, _ = self.paths()
         if running_pid(pid_file):
             ans = messagebox.askyesnocancel(
-                "smartMonitoring", "机器人还在运行。\n\n是：一起停止\n否：让它在后台继续跑\n取消：不关窗口")
+                "SmartCrypto", "机器人还在运行。\n\n是：一起停止\n否：让它在后台继续跑\n取消：不关窗口")
             if ans is None:
                 return
             if ans:

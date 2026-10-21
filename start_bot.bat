@@ -20,7 +20,7 @@ exit /b
 
 :run
 start "" pyw -3.13 main.py run --config %CFG%
-echo smartMonitoring 已在后台启动，没有窗口。
+echo SmartCrypto 已在后台启动，没有窗口。
 echo 想看它在做什么，双击 view_log.bat
 echo 要停止，双击 stop_bot.bat
 timeout /t 5 >nul

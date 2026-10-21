@@ -1,6 +1,4 @@
-# smartMonitoring · Bitget 合约自动交易机器人
-
-![logo](docs/logo.png)
+# SmartCrypto · Bitget 合约自动交易机器人
 
 自动在 Bitget USDT 永续合约（默认 BTC、ETH）上实时进场、出场，重点是**控制亏损**。
 
@@ -92,7 +90,7 @@ $env:I_UNDERSTAND_REAL_MONEY="yes"
 
 ## 4.4 控制面板（推荐）
 
-双击 **`smartMonitoring.bat`** 打开控制面板：
+双击 **`SmartCrypto.bat`** 打开控制面板：
 
 - 选模式（高频 / 普通），点「开始」「停止」
 - 第一次点「设置 API key」填三项，会保存在这台电脑上
@@ -100,7 +98,7 @@ $env:I_UNDERSTAND_REAL_MONEY="yes"
 - 运行记录用中文显示（勾「显示原始记录」可看英文原文）
 - 关掉面板时会问你：机器人要一起停止，还是留在后台继续跑
 
-想放到桌面：右键 `smartMonitoring.bat` →「发送到」→「桌面快捷方式」。
+想放到桌面：右键 `SmartCrypto.bat` →「发送到」→「桌面快捷方式」。
 
 ## 4.5 双击启动（不用开 PowerShell）
 
@@ -155,7 +153,7 @@ py main.py run --config config_hf.yaml
 |---|---|
 | `config.yaml` | 普通模式参数 |
 | `config_hf.yaml` | 高频模式参数 |
-| `gui.py` / `smartMonitoring.bat` | 控制面板 |
+| `gui.py` / `SmartCrypto.bat` | 控制面板 |
 | `main.py` | 启动入口 |
 | `bot/strategy.py` | 进出场信号 |
 | `bot/risk.py` | 风控：仓位、止损、每日亏损上限、爆仓保护 |
