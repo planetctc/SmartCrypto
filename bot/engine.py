@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .config import Config
 from .exchange import Position
-from .risk import RiskManager, RiskState
+from .risk import RiskManager, RiskState, effective_leverage
 from .strategy import TF_MS, manage_position, prepare, pyramid_add_qty, signal_at
 
 log = logging.getLogger("bot.engine")
@@ -319,12 +319,14 @@ class Engine:
         lev = self.broker.leverage_for(sym) if hasattr(self.broker, "leverage_for") \
             else self.cfg.leverage
         avg = t.avg_entry or t.entry
+        equity, free = self._balance()
+        most = (t.qty + (t.base_qty or t.qty) * self.cfg.strategy.pyramid_add_frac) * price
         q = pyramid_add_qty(t.side, t.entry, t.initial_stop, t.stop, avg, t.qty,
-                            t.base_qty or t.qty, t.adds, t.last_add or t.entry, price, lev, self.cfg)
+                            t.base_qty or t.qty, t.adds, t.last_add or t.entry, price,
+                            effective_leverage(self.cfg, most, equity, lev), self.cfg)
         q = self.broker.round_qty(sym, q) if q > 0 else 0.0
         if q <= 0:
             return
-        _, free = self._balance()
         if q * price / lev > free * 0.95:
             log.info("%s add skipped: not enough free margin", sym)
             return

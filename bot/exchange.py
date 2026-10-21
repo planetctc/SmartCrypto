@@ -13,7 +13,7 @@ import ccxt
 import pandas as pd
 
 from .config import Config
-from .risk import liquidation_price
+from .risk import effective_leverage, liquidation_price
 from .strategy import TF_MS
 
 log = logging.getLogger("bot.exchange")
@@ -109,7 +109,7 @@ class BitgetBroker:
         except ccxt.ExchangeError as e:
             log.info("position mode unchanged for %s: %s", symbol, e)
         try:
-            self.ex.set_margin_mode("isolated", symbol)
+            self.ex.set_margin_mode(self.cfg.margin_mode, symbol)
         except ccxt.ExchangeError as e:
             log.info("margin mode unchanged for %s: %s", symbol, e)
         last_err = None
@@ -205,7 +205,7 @@ class BitgetBroker:
         """Market entry with stop-loss and take-profit attached on the exchange, so they
         still fire if this program crashes or loses connection."""
         params = {
-            "marginMode": "isolated",
+            "marginMode": self.cfg.margin_mode,
             "hedged": False,
             "stopLoss": {"triggerPrice": float(self.ex.price_to_precision(symbol, stop))},
             "takeProfit": {"triggerPrice": float(self.ex.price_to_precision(symbol, tp))},
@@ -224,7 +224,7 @@ class BitgetBroker:
         if the price has already moved through. Stop-loss / take-profit are attached the same
         way as market entries."""
         params = {
-            "marginMode": "isolated",
+            "marginMode": self.cfg.margin_mode,
             "hedged": False,
             "postOnly": True,
             "stopLoss": {"triggerPrice": float(self.ex.price_to_precision(symbol, stop))},
@@ -249,7 +249,7 @@ class BitgetBroker:
     def close(self, symbol: str, pos: Position) -> float:
         side = "sell" if pos.side == "long" else "buy"
         order = self.ex.create_order(symbol, "market", side, pos.qty, None,
-                                     {"marginMode": "isolated", "hedged": False, "reduceOnly": True})
+                                     {"marginMode": self.cfg.margin_mode, "hedged": False, "reduceOnly": True})
         self.cancel_triggers(symbol)
         return float(order.get("average") or order.get("price") or self.price(symbol))
 
@@ -354,7 +354,8 @@ class PaperBroker:
         if old:  # adding to an open position (平加仓): average the entry, pool the margin
             fill = (old.entry * old.qty + fill * qty) / (old.qty + qty)
             qty, margin = old.qty + qty, old.margin + margin
-        liq = liquidation_price(fill, side, self.cfg.leverage, self.cfg.risk.maintenance_margin_rate)
+        lev = effective_leverage(self.cfg, fill * qty, self.cash, self.cfg.leverage)
+        liq = liquidation_price(fill, side, lev, self.cfg.risk.maintenance_margin_rate)
         self.pos[symbol] = Position(symbol, side, qty, fill, liq, 0.0, margin)
         self.orders[symbol] = (stop, tp)
 

@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from .config import Config
-from .risk import RiskManager, liquidation_price
+from .risk import RiskManager, effective_leverage, liquidation_price
 from .strategy import TF_MS, manage_position, prepare, pyramid_add_qty, signal_at
 
 
@@ -86,8 +86,10 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
         """平加仓 at this bar's close with a market order, same rules as live."""
         nonlocal cash
         sign = 1 if p.side == "long" else -1
+        most = (p.qty + p.base_qty * cfg.strategy.pyramid_add_frac) * close
         q = pyramid_add_qty(p.side, p.first_entry, p.initial_stop, p.stop, p.entry, p.qty,
-                            p.base_qty, p.adds, p.last_add, close, cfg.leverage, cfg)
+                            p.base_qty, p.adds, p.last_add, close,
+                            effective_leverage(cfg, most, cash, cfg.leverage), cfg)
         if q <= 0:
             return
         fill = close * (1 + sign * slip)
@@ -99,7 +101,8 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
         p.entry = (p.entry * p.qty + fill * q) / (p.qty + q)
         p.qty += q
         p.margin += margin
-        p.liq = liquidation_price(p.entry, p.side, cfg.leverage, cfg.risk.maintenance_margin_rate)
+        lev = effective_leverage(cfg, p.entry * p.qty, cash, cfg.leverage)
+        p.liq = liquidation_price(p.entry, p.side, lev, cfg.risk.maintenance_margin_rate)
         p.adds += 1
         p.last_add = fill
 
@@ -141,7 +144,9 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
             cash -= entry_fee * sizing.notional
             risk.record_open()
             pos[sym] = BtPos(sig.side, sizing.qty, fill, stop, stop, tp, fill,
-                             liquidation_price(fill, sig.side, cfg.leverage,
+                             liquidation_price(fill, sig.side,
+                                               effective_leverage(cfg, sizing.notional, equity,
+                                                                  cfg.leverage),
                                                cfg.risk.maintenance_margin_rate),
                              sizing.margin, entry_fee * sizing.notional, i, ts,
                              fill, sizing.qty, 0, fill)

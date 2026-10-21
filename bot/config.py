@@ -58,9 +58,10 @@ class Config:
     trend_timeframe: str = "1h"
     capital_usd: float = 0.0          # >0: run risk rules as if the account only held this much
     leverage: int = 100
-    margin_mode: str = "isolated"
+    margin_mode: str = "isolated"    # "isolated" (逐仓) or "cross" (全仓)
     min_margin_usd: float = 5.0
     max_margin_usd: float = 15.0
+    fixed_margin_usd: float = 0.0    # >0: every trade uses this margin (risk caps may shrink it)
     max_open_positions: int = 2
     entry_order: str = "market"      # "market" or "maker" (post-only limit, lower fee)
     maker_timeout_seconds: int = 60  # cancel an unfilled maker entry after this long
@@ -98,8 +99,8 @@ def validate(cfg: Config) -> None:
         raise ValueError("account_type must be auto, classic or unified")
     if cfg.entry_order not in ("market", "maker"):
         raise ValueError("entry_order must be market or maker")
-    if cfg.margin_mode != "isolated":
-        raise ValueError("only isolated margin is supported (limits each trade's loss to its margin)")
+    if cfg.margin_mode not in ("isolated", "cross"):
+        raise ValueError("margin_mode must be isolated or cross")
     if not 0 < cfg.min_margin_usd <= cfg.max_margin_usd:
         raise ValueError("need 0 < min_margin_usd <= max_margin_usd")
     if not 1 <= cfg.leverage <= 125:

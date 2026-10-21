@@ -21,9 +21,17 @@ def liquidation_price(entry: float, side: str, leverage: float, mmr: float) -> f
     return entry * (1 + 1 / leverage - mmr)
 
 
+def effective_leverage(cfg: Config, notional: float, equity: float, leverage: float) -> float:
+    """Leverage that decides the liquidation price. Isolated: the set leverage. Cross (全仓):
+    the whole account backs the position, so it is position size / account equity."""
+    if cfg.margin_mode == "cross" and equity > 0:
+        return max(1.0, notional / equity)
+    return leverage
+
+
 @dataclass
 class Sizing:
-    margin: float      # USDT locked as isolated margin
+    margin: float      # USDT margin for this position
     notional: float    # position value in USDT
     qty: float         # contracts in base coin (e.g. BTC)
     stop_pct: float
@@ -137,14 +145,9 @@ class RiskManager:
         if stop_pct > r.max_stop_pct * 1.001:
             return None, f"stop {stop_pct:.3%} wider than max {r.max_stop_pct:.3%}"
 
-        liq = liquidation_price(entry, side, lev, r.maintenance_margin_rate)
-        liq_dist = abs(entry - liq) / entry
-        if stop_pct + r.liq_buffer_pct > liq_dist:
-            return None, (f"stop {stop_pct:.3%} too close to liquidation {liq_dist:.3%} "
-                          f"at {lev}x")
-
         strength = min(1.0, max(0.0, strength))
-        margin = cfg.min_margin_usd + (cfg.max_margin_usd - cfg.min_margin_usd) * strength
+        margin = cfg.fixed_margin_usd or \
+            cfg.min_margin_usd + (cfg.max_margin_usd - cfg.min_margin_usd) * strength
         f = cfg.fees
         entry_cost = f.maker if cfg.entry_order == "maker" else f.taker + f.slippage
         cost_pct = stop_pct + entry_cost + f.taker + f.slippage  # exits are market orders
@@ -158,6 +161,12 @@ class RiskManager:
             return None, f"margin {margin:.2f} below min {cfg.min_margin_usd} after risk caps"
 
         notional = margin * lev
+        liq = liquidation_price(entry, side, effective_leverage(cfg, notional, equity, lev),
+                                r.maintenance_margin_rate)
+        liq_dist = abs(entry - liq) / entry
+        if stop_pct + r.liq_buffer_pct > liq_dist:
+            return None, (f"stop {stop_pct:.3%} too close to liquidation {liq_dist:.3%} "
+                          f"at {lev}x")
         return Sizing(
             margin=margin,
             notional=notional,

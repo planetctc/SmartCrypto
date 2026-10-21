@@ -140,7 +140,8 @@ def apply_overrides(cfg, coins: str | None, margin: float | None) -> None:
         if not cfg.symbols:
             raise SystemExit("--coins 至少要有一个币")
     if margin:
-        cfg.min_margin_usd = cfg.max_margin_usd = margin
+        cfg.fixed_margin_usd = cfg.max_margin_usd = margin
+        cfg.min_margin_usd = min(cfg.min_margin_usd, margin)
     validate(cfg)
 
 

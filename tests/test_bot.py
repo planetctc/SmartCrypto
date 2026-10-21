@@ -48,9 +48,20 @@ def test_sizing_margin_range_and_stop_inside_liquidation():
 def test_sizing_rejects_wide_and_tight_stops():
     rm = RiskManager(cfg())
     rm.update_equity(0, 100)
-    assert rm.size(100.0, 99.0, "long", 1, 100, 100)[0] is None    # 1% stop: past liquidation
-    assert rm.size(100.0, 99.95, "long", 1, 100, 100)[0] is None   # 0.05%: noise
+    assert rm.size(100.0, 98.5, "long", 1, 100, 100)[0] is None    # 1.5%: wider than max
+    assert rm.size(100.0, 99.8, "long", 1, 100, 100)[0] is None    # 0.2%: noise
     assert rm.size(100.0, 100.3, "short", 1, 100, 100)[0] is not None
+
+
+def test_cross_margin_allows_wide_stop_that_isolated_would_liquidate():
+    c = cfg()
+    assert c.margin_mode == "cross" and c.max_open_positions == 1
+    rm = RiskManager(c)
+    rm.update_equity(0, 100)
+    s, _ = rm.size(100.0, 99.0, "long", 1, 100, 100)              # 1% stop at 100x
+    assert s and s.expected_loss <= 10 + 1e-9 and s.liq_price < 99.0
+    c.margin_mode = "isolated"                                    # 逐仓 liquidates at ~0.5%
+    assert RiskManager(c, rm.state).size(100.0, 99.0, "long", 1, 100, 100)[0] is None
 
 
 def test_sizing_respects_remaining_daily_budget():
@@ -492,7 +503,7 @@ def test_panel_overrides_coins_and_fixed_margin():
     assert c.symbols == ["BTC/USDT:USDT", "SOL/USDT:USDT"]
     r = RiskManager(c)
     r.update_equity(0, 100)
-    margins = {round(r.size(100, 99.8, "long", s, 100, 100)[0].margin, 6) for s in (0, 0.5, 1)}
+    margins = {round(r.size(100, 99.6, "long", s, 100, 100)[0].margin, 6) for s in (0, 0.5, 1)}
     assert margins == {10.0}                       # same margin whatever the signal strength
 
 

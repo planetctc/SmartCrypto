@@ -29,10 +29,10 @@ trend_timeframe: 15m   # 判断大方向的 K 线周期
 # ---------------- 仓位和杠杆 ----------------
 capital_usd: 100       # 机器人当作账户只有 100 USDT 来算风控（模拟盘假钱很多时用）；0 = 用账户真实余额
 leverage: 100          # 杠杆倍数（逐仓）
-margin_mode: isolated  # 逐仓：一单出事最多亏这单的保证金
+margin_mode: cross      # 全仓：整个账户一起扛，爆仓价离得远，止损可以放宽（isolated = 逐仓）
 min_margin_usd: 5      # 每单最少保证金（信号一般时）
 max_margin_usd: 15     # 每单最多保证金（信号强时）
-max_open_positions: 3  # 同时最多持有几单
+max_open_positions: 1  # 同时只开一单
 
 # 进场方式:
 #   market = 市价单，马上成交，手续费 0.06%
@@ -46,8 +46,8 @@ risk:
   day_reset_utc_offset: 8      # "一天"按 UTC+8（北京/新加坡/马来西亚时间）00:00 重置
   max_loss_per_trade_usd: 10   # 单笔止损+手续费最多亏多少，超过就自动缩小仓位
   min_equity_stop_usd: 50      # 账户总资金低于这个数，机器人完全停止（设 0 关闭）
-  max_stop_pct: 0.0040         # 止损距离最大 0.40%（100 倍时爆仓大约在 0.5% 左右）
-  min_stop_pct: 0.0015         # 止损距离最小 0.15%（太近会被正常波动打掉）
+  max_stop_pct: 0.0100         # 止损距离最大 1%（ETH 2400 时约 24 点）
+  min_stop_pct: 0.0030         # 止损距离最小 0.3%（ETH 约 7 点，BTC 约 250 美金，太近会被正常波动打掉）
   liq_buffer_pct: 0.0008       # 止损价至少要比爆仓价早 0.08%
   maintenance_margin_rate: 0.005  # 维持保证金率（估算爆仓价用，偏保守）
   max_consecutive_losses: 4    # 连续亏 4 单就暂停
