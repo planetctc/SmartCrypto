@@ -90,6 +90,20 @@ $env:I_UNDERSTAND_REAL_MONEY="yes"
 按 `Ctrl + C`。已经开着的单仍然有交易所上的止损/止盈保护。
 重新启动时程序会读取 `data/state.json`，接着管理之前的单，并记得当天已经亏了多少。
 
+## 4.5 双击启动（不用开 PowerShell）
+
+文件夹里有 4 个小程序，双击就能用：
+
+| 文件 | 作用 |
+|---|---|
+| `set_api_key.bat` | 设置 API key，只要做一次（换 key 时再做） |
+| `start_bot.bat` | 在后台启动机器人（高频模式），没有窗口 |
+| `view_log.bat` | 打开一个窗口看机器人在做什么，关掉它不会停止机器人 |
+| `stop_bot.bat` | 停止机器人，已经开着的单在 Bitget 上仍有止损保护 |
+
+第一次用：先双击 `set_api_key.bat` 设好 key，再双击 `start_bot.bat`。
+电脑重启后要再双击一次 `start_bot.bat`。
+
 ## 5. 高频模式（一天开很多单）
 
 `config_hf.yaml` 是高频版本，和普通模式的区别：

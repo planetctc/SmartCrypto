@@ -29,8 +29,10 @@ def setup_logging(log_file: str) -> None:
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     root = logging.getLogger()
     root.setLevel(logging.INFO)
-    for h in (logging.StreamHandler(sys.stdout),
-              RotatingFileHandler(log_file, maxBytes=5_000_000, backupCount=5, encoding="utf-8")):
+    handlers = [RotatingFileHandler(log_file, maxBytes=5_000_000, backupCount=5, encoding="utf-8")]
+    if sys.stdout is not None:  # no console when started in the background (pyw)
+        handlers.append(logging.StreamHandler(sys.stdout))
+    for h in handlers:
         h.setFormatter(fmt)
         root.addHandler(h)
 
@@ -94,6 +96,15 @@ def cmd_compare(_, args):
         f"{round(results[p]['trades'] / days[p], 1):>{w}}" for p in results))
 
 
+def write_pid_file(cfg):
+    """Lets stop_bot.bat find and stop a bot running in the background."""
+    import atexit
+    pid_file = Path(cfg.state_file).with_suffix(".pid")
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(os.getpid()))
+    atexit.register(lambda: pid_file.unlink(missing_ok=True))
+
+
 def cmd_run(cfg, args):
     from bot.engine import Engine
     from bot.exchange import BitgetBroker, PaperBroker
@@ -106,6 +117,7 @@ def cmd_run(cfg, args):
         broker = BitgetBroker(cfg, demo=True)
     else:
         broker = PaperBroker(cfg, args.balance)
+    write_pid_file(cfg)
     Engine(cfg, broker).run()
 
 
