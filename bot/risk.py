@@ -43,6 +43,7 @@ class RiskState:
     trades_today: int = 0
     opens_today: int = 0
     realized_today: float = 0.0
+    equity_baseline: float = 0.0   # real account equity when the bot first started (capital_usd mode)
 
     def to_dict(self) -> dict:
         return asdict(self)

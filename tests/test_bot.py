@@ -312,3 +312,17 @@ def test_engine_maker_entry_cancelled_after_timeout(tmp_path):
     b.now += c.maker_timeout_seconds * 1000 + 1
     e.step()
     assert b.limits["1"]["status"] == "canceled" and not e.pending and not e.trades
+
+
+def test_capital_usd_makes_big_demo_account_act_like_100(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file, c.capital_usd = ["BTC/USDT:USDT"], str(tmp_path / "s.json"), 100
+    b = FakeBroker(_df_ending_in_signal(c))
+    b.equity = 50_000.0
+    e = Engine(c, b)
+    e.step()
+    assert b.opened and e.risk.state.day_start_equity == pytest.approx(100)
+    b.equity = 50_000.0 - 31                            # bot lost 31 of its 100
+    b.now += 1000
+    e.step()
+    assert not b.pos                                    # 30% daily limit fired

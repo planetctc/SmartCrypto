@@ -50,6 +50,7 @@ class Config:
     symbols: list[str] = field(default_factory=lambda: ["BTC/USDT:USDT", "ETH/USDT:USDT"])
     timeframe: str = "5m"
     trend_timeframe: str = "1h"
+    capital_usd: float = 0.0          # >0: run risk rules as if the account only held this much
     leverage: int = 100
     margin_mode: str = "isolated"
     min_margin_usd: float = 5.0

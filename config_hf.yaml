@@ -21,6 +21,7 @@ timeframe: 1m          # 进场看的 K 线周期
 trend_timeframe: 15m   # 判断大方向的 K 线周期
 
 # ---------------- 仓位和杠杆 ----------------
+capital_usd: 100       # 机器人当作账户只有 100 USDT 来算风控（模拟盘假钱很多时用）；0 = 用账户真实余额
 leverage: 100          # 杠杆倍数（逐仓）
 margin_mode: isolated  # 逐仓：一单出事最多亏这单的保证金
 min_margin_usd: 5      # 每单最少保证金（信号一般时）

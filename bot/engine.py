@@ -94,7 +94,7 @@ class Engine:
                 log.info("%s closed by %s pnl=%.2f", sym, why, pnl)
             b.closed_by_exchange.clear()
 
-        equity, free = b.balance()
+        equity, free = self._balance()
         positions = b.positions()
         self._check_pending(now, positions)
         self._forget_closed(now, positions)
@@ -114,6 +114,21 @@ class Engine:
             if sym in positions:
                 self._manage(sym, positions[sym], now)
         self._save_state()
+
+    def _balance(self) -> tuple[float, float]:
+        """Equity and free balance as the risk rules see them. With capital_usd set, the bot
+        acts as if the account held only that amount plus its own profit/loss since it started
+        (so a demo account with 50,000 test USDT behaves like a 100 USDT account)."""
+        equity, free = self.broker.balance()
+        cap = self.cfg.capital_usd
+        if cap <= 0:
+            return equity, free
+        st = self.risk.state
+        if st.equity_baseline <= 0:
+            st.equity_baseline = equity
+            log.info("capital_usd=%.2f: real equity %.2f taken as baseline", cap, equity)
+        virtual = cap + (equity - st.equity_baseline)
+        return virtual, min(free, virtual - (equity - free))
 
     # ---------- maker entries ----------
     def _check_pending(self, now: int, positions: dict[str, Position]) -> None:
@@ -208,7 +223,7 @@ class Engine:
             self._try_open(sym, sig, now, positions)
 
     def _try_open(self, sym, sig, now, positions) -> None:
-        equity, free = self.broker.balance()
+        equity, free = self._balance()
         ok, why = self.risk.can_open(now, sym, len(positions) + len(self.pending), equity)
         if not ok:
             log.info("%s signal skipped: %s", sym, why)
