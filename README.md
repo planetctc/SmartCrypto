@@ -90,6 +90,18 @@ $env:I_UNDERSTAND_REAL_MONEY="yes"
 按 `Ctrl + C`。已经开着的单仍然有交易所上的止损/止盈保护。
 重新启动时程序会读取 `data/state.json`，接着管理之前的单，并记得当天已经亏了多少。
 
+## 4.4 控制面板（推荐）
+
+双击 **`smartMonitoring.bat`** 打开控制面板：
+
+- 选模式（高频 / 普通），点「开始」「停止」
+- 第一次点「设置 API key」填三项，会保存在这台电脑上
+- 显示今天开单数、平仓数、胜率、今天赚亏和累计赚亏
+- 运行记录用中文显示（勾「显示原始记录」可看英文原文）
+- 关掉面板时会问你：机器人要一起停止，还是留在后台继续跑
+
+想放到桌面：右键 `smartMonitoring.bat` →「发送到」→「桌面快捷方式」。
+
 ## 4.5 双击启动（不用开 PowerShell）
 
 文件夹里有 4 个小程序，双击就能用：
@@ -143,6 +155,7 @@ py main.py run --config config_hf.yaml
 |---|---|
 | `config.yaml` | 普通模式参数 |
 | `config_hf.yaml` | 高频模式参数 |
+| `gui.py` / `smartMonitoring.bat` | 控制面板 |
 | `main.py` | 启动入口 |
 | `bot/strategy.py` | 进出场信号 |
 | `bot/risk.py` | 风控：仓位、止损、每日亏损上限、爆仓保护 |
