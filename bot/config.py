@@ -64,6 +64,7 @@ class Config:
     max_open_positions: int = 2
     entry_order: str = "market"      # "market" or "maker" (post-only limit, lower fee)
     maker_timeout_seconds: int = 60  # cancel an unfilled maker entry after this long
+    whole_price_coins: list[str] = field(default_factory=lambda: ["BTC", "ETH"])  # no decimals
     risk: RiskConfig = field(default_factory=RiskConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     fees: FeeConfig = field(default_factory=FeeConfig)

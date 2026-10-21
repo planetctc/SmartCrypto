@@ -221,7 +221,7 @@ def test_engine_flattens_everything_on_daily_loss(tmp_path):
 # ---------- high-frequency mode ----------
 def test_hf_config_loads():
     c = load_config(ROOT / "config_hf.yaml")
-    assert c.timeframe == "1m" and c.entry_order == "maker" and len(c.symbols) == 5
+    assert c.timeframe == "1m" and c.entry_order == "market" and len(c.symbols) == 5
     assert c.risk.max_trades_per_day == 40 and c.risk.daily_max_loss_pct == 0.30
     assert (c.leverage, c.min_margin_usd, c.max_margin_usd) == (100, 5, 15)
 
@@ -251,7 +251,7 @@ def test_maker_sizing_cheaper_than_market():
 
 def test_backtest_maker_mode_fees_and_bounds():
     c = load_config(ROOT / "config_hf.yaml")
-    c.symbols = c.symbols[:2]
+    c.symbols, c.entry_order = c.symbols[:2], "maker"
     frames = {s: synthetic(8000, seed=7 + i, start_price=[60_000, 3_000][i], step_ms=60_000)
               for i, s in enumerate(c.symbols)}
     stats, trades, _ = run_backtest(c, frames, 100)
@@ -467,7 +467,7 @@ def test_engine_adds_to_winner_with_exchange_stop(tmp_path):
     t = e.trades[sym]
     assert t.adds == 1 and len(b.opened) == 2
     _, _, q, stop, _ = b.opened[1]
-    assert stop == t.stop and sign * (t.stop - t.entry) > 0           # add carries the locked stop
+    assert stop == e._round(sym, t.stop, t.side) and sign * (stop - t.entry) > 0  # locked stop
     assert _loss_at_stop(t.side, t.stop, t.avg_entry, t.qty, c) <= 0.5 + 1e-6
     b.now += 1000
     e.step()
@@ -494,3 +494,16 @@ def test_panel_overrides_coins_and_fixed_margin():
     r.update_equity(0, 100)
     margins = {round(r.size(100, 99.8, "long", s, 100, 100)[0].margin, 6) for s in (0, 0.5, 1)}
     assert margins == {10.0}                       # same margin whatever the signal strength
+
+
+def test_btc_eth_prices_are_whole_points(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    b = FakeBroker(_df_ending_in_signal(c))
+    Engine(c, b).step()
+    _, side, _, stop, tp = b.opened[0]
+    assert stop == int(stop) and tp == int(tp)
+    e = Engine(c, b)
+    assert e._round("ETH/USDT:USDT", 2452.2461, "long") == 2452
+    assert e._round("ETH/USDT:USDT", 2452.2461, "short") == 2453
+    assert e._round("XRP/USDT:USDT", 1.3341, "long") == 1.3341

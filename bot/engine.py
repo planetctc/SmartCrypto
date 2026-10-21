@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -177,7 +178,7 @@ class Engine:
         self.risk.record_open()
         self.trades[sym] = Trade(pe.side, pos.qty, pos.entry, pe.stop, pe.stop, pe.take_profit,
                                  pos.entry, now)
-        log.info("FILLED %s %s qty=%s @ %.4f stop=%.4f tp=%.4f",
+        log.info("FILLED %s %s qty=%s @ %.10g stop=%.10g tp=%.10g",
                  sym, pe.side, pos.qty, pos.entry, pe.stop, pe.take_profit)
         self._liq_safety(sym, pos, pe.stop, now)
 
@@ -185,11 +186,18 @@ class Engine:
         """If the exchange's real liquidation price sits inside our stop, get out now."""
         sign = 1 if pos.side == "long" else -1
         if pos.liq_price > 0 and sign * (stop - pos.liq_price) <= 0:
-            log.error("%s liquidation %.4f is before stop %.4f, closing immediately",
+            log.error("%s liquidation %.10g is before stop %.10g, closing immediately",
                       sym, pos.liq_price, stop)
             self._close(sym, pos, now, "liq safety")
 
     # ---------- helpers ----------
+    def _round(self, sym: str, px: float, side: str) -> float:
+        """BTC/ETH prices in whole points like a trader would set them. Long rounds down and
+        short rounds up, so entries never chase and stops only get a little wider."""
+        if sym.split("/")[0] not in self.cfg.whole_price_coins:
+            return px
+        return float(math.floor(px) if side == "long" else math.ceil(px))
+
     def _forget_closed(self, now: int, positions: dict[str, Position]) -> None:
         """A tracked trade with no exchange position was closed by the exchange stop/TP."""
         for sym in [s for s in self.trades if s not in positions]:
@@ -209,7 +217,7 @@ class Engine:
         sign = 1 if p.side == "long" else -1
         fees = 2 * self.cfg.fees.taker * p.entry * p.qty
         pnl = sign * (fill - p.entry) * p.qty - fees
-        log.info("CLOSE %s %s qty=%s @ %.4f (%s) pnl≈%.2f", sym, p.side, p.qty, fill, why, pnl)
+        log.info("CLOSE %s %s qty=%s @ %.10g (%s) pnl≈%.2f", sym, p.side, p.qty, fill, why, pnl)
         self.trades.pop(sym, None)
         stopped = pnl < 0 and why != "max hold time"
         self.risk.record_close(now, sym, pnl, stopped, self.tf_ms)
@@ -243,13 +251,15 @@ class Engine:
         dist = abs(sig.entry - sig.stop)
         sign = 1 if sig.side == "long" else -1
         if sign * (price - sig.entry) > 0.5 * dist:
-            log.info("%s signal skipped: price already ran %.4f past signal", sym, price - sig.entry)
+            log.info("%s signal skipped: price already ran %.10g past signal", sym, price - sig.entry)
             return
         maker = self.cfg.entry_order == "maker"
         if maker:  # rest at the signal close, never on the wrong side of the market
             price = min(price, sig.entry) if sig.side == "long" else max(price, sig.entry)
-        stop = price - sign * dist
-        tp = price + sign * dist * self.cfg.strategy.reward_risk
+        if maker:
+            price = self._round(sym, price, sig.side)
+        stop = self._round(sym, price - sign * dist, sig.side)
+        tp = self._round(sym, price + sign * dist * self.cfg.strategy.reward_risk, sig.side)
         lev = self.broker.leverage_for(sym) if hasattr(self.broker, "leverage_for") else None
         sizing, why = self.risk.size(price, stop, sig.side, sig.strength, free, equity, lev)
         if sizing is None:
@@ -264,13 +274,13 @@ class Engine:
             oid = self.broker.open_maker(sym, sig.side, qty, price, stop, tp)
             self.pending[sym] = PendingEntry(oid, sig.side, qty, price, stop, tp,
                                              now + self.cfg.maker_timeout_seconds * 1000)
-            log.info("MAKER %s %s qty=%s @ %.4f stop=%.4f tp=%.4f margin≈%.2f strength=%.2f (%s)",
+            log.info("MAKER %s %s qty=%s @ %.10g stop=%.10g tp=%.10g margin≈%.2f strength=%.2f (%s)",
                      sym, sig.side, qty, price, stop, tp, sizing.margin, sig.strength, sig.reason)
             return
 
         fill = self.broker.open(sym, sig.side, qty, stop, tp)
         self.risk.record_open()
-        log.info("OPEN %s %s qty=%s @ %.4f stop=%.4f tp=%.4f margin≈%.2f strength=%.2f (%s)",
+        log.info("OPEN %s %s qty=%s @ %.10g stop=%.10g tp=%.10g margin≈%.2f strength=%.2f (%s)",
                  sym, sig.side, qty, fill, stop, tp, sizing.margin, sig.strength, sig.reason)
         self.trades[sym] = Trade(sig.side, qty, fill, stop, stop, tp, fill, now)
         pos = self.broker.positions().get(sym)
@@ -291,7 +301,7 @@ class Engine:
             stop = p.entry * (1 - sign * self.cfg.risk.max_stop_pct)
             t = Trade(p.side, p.qty, p.entry, stop, stop, p.entry, p.entry, now)
             self.trades[sym] = t
-            log.warning("%s adopted unknown position, managed stop %.4f", sym, stop)
+            log.warning("%s adopted unknown position, managed stop %.10g", sym, stop)
         price = self.broker.price(sym)
         t.best = max(t.best, price) if t.side == "long" else min(t.best, price)
         bars = (now - t.opened_ms) // self.tf_ms
@@ -319,12 +329,12 @@ class Engine:
             log.info("%s add skipped: not enough free margin", sym)
             return
         t.base_qty = t.base_qty or t.qty
-        fill = self.broker.open(sym, t.side, q, t.stop, t.take_profit)
+        fill = self.broker.open(sym, t.side, q, self._round(sym, t.stop, t.side), t.take_profit)
         t.avg_entry = (avg * t.qty + fill * q) / (t.qty + q)
         t.qty += q
         t.adds += 1
         t.last_add = fill
-        log.info("ADD %s %s qty=%s @ %.4f -> total qty=%s avg=%.4f stop=%.4f (add %d)",
+        log.info("ADD %s %s qty=%s @ %.10g -> total qty=%s avg=%.10g stop=%.10g (add %d)",
                  sym, t.side, q, fill, t.qty, t.avg_entry, t.stop, t.adds)
         pos = self.broker.positions().get(sym)
         if pos:
