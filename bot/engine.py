@@ -297,7 +297,10 @@ class Engine:
 
     def _replaceable(self, sym: str, positions: dict[str, Position]) -> list[str]:
         """replace_on_new_signal: other coins' waiting limit entries and trades whose stop is
-        not yet at break-even. A new signal on `sym` may take their place."""
+        not yet at break-even but which already show a profit after fees. A new signal on `sym`
+        may take their place. A trade that is losing is never cut for a swap (live 2026-10-22:
+        every such swap locked in a loss); it runs to its own stop or take-profit."""
+        f = self.cfg.fees
         now = self.broker.now_ms()
         others = [s for s in self.pending if s != sym]
         for s in positions.keys() | self.trades.keys():
@@ -305,7 +308,9 @@ class Engine:
             if s == sym or t is None or now - t.opened_ms < self.tf_ms:
                 continue  # a trade opened on this bar gets at least one bar before a swap
             sign = 1 if t.side == "long" else -1
-            if sign * (t.stop - t.entry) < 0:
+            p = positions.get(s)
+            cost = p.qty * p.entry * (2 * f.taker + f.slippage) if p else 0.0
+            if sign * (t.stop - t.entry) < 0 and p is not None and p.unrealized > cost:
                 others.append(s)
         return others
 

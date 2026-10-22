@@ -849,7 +849,7 @@ def test_selftest_refuses_when_coin_already_has_a_position():
     assert len(res) == 1 and not res[0][1] and "setup" not in b.calls
 
 
-def _replace_engine(tmp_path, protected):
+def _replace_engine(tmp_path, protected, unrealized=5.0):
     from bot.engine import Trade
     c = cfg()
     c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
@@ -857,7 +857,7 @@ def _replace_engine(tmp_path, protected):
     b = FakeBroker(_df_ending_in_signal(c))
     e = Engine(c, b)
     old = "ETH/USDT:USDT"
-    b.pos[old] = Position(old, "long", 1, 3000, 2970, 0, 30)
+    b.pos[old] = Position(old, "long", 1, 3000, 2970, unrealized, 30)
     stop = 3001 if protected else 2990
     e.trades[old] = Trade("long", 1, 3000, 2990, stop, 3020, 3000, b.now - 2 * 300_000)
     return c, b, e, old
@@ -869,6 +869,13 @@ def test_new_signal_replaces_trade_that_is_not_yet_protected(tmp_path):
     assert old in b.closed and old not in e.trades
     assert [o[0] for o in b.opened] == ["BTC/USDT:USDT"]
     assert e.risk.state.cooldown_until_ms.get(old, 0) == 0  # a swap is not a stop-out
+
+
+def test_losing_trade_is_never_cut_for_a_new_signal(tmp_path):
+    for loss in (-2.0, 1.0):  # 1.0 profit does not cover the round-trip fees
+        c, b, e, old = _replace_engine(tmp_path, protected=False, unrealized=loss)
+        e.step()
+        assert old not in b.closed and old in e.trades and not b.opened
 
 
 def test_new_signal_keeps_trade_already_at_break_even(tmp_path):
