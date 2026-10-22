@@ -884,3 +884,10 @@ def test_zero_consecutive_losses_means_never_pause():
     for i in range(10):
         rm.record_close(i, "BTC/USDT:USDT", -1.0, False, 60_000)
     assert rm.state.paused_until_ms == 0
+
+
+def test_high_frequency_mode_never_waits_after_a_stop():
+    c = load_config(ROOT / "config_hf.yaml")
+    rm = RiskManager(c)
+    rm.record_close(1_000, "BTC/USDT:USDT", -2.0, True, 900_000)
+    assert rm.can_open(1_000, "BTC/USDT:USDT", 0, 100)[0]
