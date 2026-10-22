@@ -107,26 +107,17 @@ def tune_variants():
     """(name, top-level config changes, strategy changes, show indicators) for every
     combination the panel compares.
 
-    Fast in-and-out (快打快出): breakout and the 9-indicator score on 5m/15m with small
-    take-profits, limit-order entry AND limit-order take-profit (maker fee both ways, no
-    slippage on the way out). Exits are simulated minute by minute. The 1h breakout, the only
-    signal so far to make money in both parts, stays in as the yardstick.
+    5m-30m signals of every kind lost in 90 days of real data; only the 1h breakout made
+    money in both parts. To get more trades out of it, this round runs the breakout on 1h
+    and 30m bars over every ticked coin and keeps the coins that made money in the first part.
     """
     out = []
-    for tf_name, tf, trend_tf in SCALP_TIMEFRAMES:
-        top = {"timeframe": tf, "trend_timeframe": trend_tf, "entry_order": "maker",
+    for tf_name, tf in (("1 小时", "1h"), ("30 分钟", "30m")):
+        top = {"timeframe": tf, "trend_timeframe": "4h", "entry_order": "maker",
                "tp_order": "maker"}
-        for tp in (0.5, 1.0):
-            out.append((f"{tf_name}·突破·止盈 {tp:g} 倍·挂单止盈", top,
+        for tp in (2.0, 1.5):
+            out.append((f"{tf_name}·突破·止盈 {tp:g} 倍", top,
                         {"signal_type": "breakout", "take_profit_r": [tp]}, False))
-            out.append((f"{tf_name}·综合打分 4 项以上·止盈 {tp:g} 倍·挂单止盈", top,
-                        {"signal_type": "score", "min_score": 4, "volume_factor": 0.0,
-                         "take_profit_r": [tp]}, True))
-    for tp_order, label in (("market", "（对照）"), ("maker", "·挂单止盈")):
-        out.append((f"1 小时·突破·止盈 2 倍{label}",
-                    {"timeframe": "1h", "trend_timeframe": "4h", "entry_order": "maker",
-                     "tp_order": tp_order},
-                    {"signal_type": "breakout", "take_profit_r": [2.0]}, False))
     return out
 
 

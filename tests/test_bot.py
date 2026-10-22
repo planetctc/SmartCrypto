@@ -587,9 +587,9 @@ def test_tune_variants_cover_every_signal_and_config_is_valid():
     import main
     from bot.config import validate
     variants = main.tune_variants()
-    assert len(variants) == 10
-    assert {v[1]["timeframe"] for v in variants} == {"5m", "15m", "1h"}
-    assert {v[2]["signal_type"] for v in variants} == {"score", "breakout"}
+    assert len(variants) == 4
+    assert {v[1]["timeframe"] for v in variants} == {"30m", "1h"}
+    assert {v[2]["signal_type"] for v in variants} == {"breakout"}
     for _, top, change, _ in variants:
         c = load_config(ROOT / "config.yaml")
         for k, v in top.items():
