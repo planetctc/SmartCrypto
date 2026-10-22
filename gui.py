@@ -211,6 +211,10 @@ def _friendly(line: str) -> str:
         verdict = "盘口确认，开单" if r[5] == "ok" else "盘口不支持，不开"
         return (f"{t}  {coin(r[1])} {side(r[2])}信号：主动{'买' if r[2] == 'long' else '卖'}占 {r[3]}%，"
                 f"挂单厚度 {float(r[4]):+.2f}，{verdict}")
+    if r := re.match(r"close (\S+): position already closed by the exchange", msg):
+        return f"{t}  {coin(r[1])} 交易所已先平掉（止损/止盈），不用再平"
+    if r := re.match(r"(\S+) maker entry partly filled (\S+)/(\S+) before cancel", msg):
+        return f"{t}  {coin(r[1])} 挂单只成交了一部分（{r[2]}/{r[3]}），剩下的已撤"
     if r := re.match(r"TODAY (\d+) trades, pnl (\S+)", msg):
         return f"{t}  今天已平 {r[1]} 单，合计 {float(r[2]):+.2f} USDT"
     if r := re.match(r"(\S+) last (\d+) trades (\S+): half size", msg):

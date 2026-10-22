@@ -128,7 +128,7 @@ class Engine:
         self._check_pending(now, positions)
         self._forget_closed(now, positions)
 
-        if self.risk.daily_loss_hit(now, equity) or self.risk.state.killed:
+        if self.risk.daily_loss_hit(now, equity) or (self.risk.state.killed and self.risk.limits_on):
             for sym in list(self.pending):
                 self._cancel_pending(sym, now, positions)
             if positions:
@@ -253,10 +253,18 @@ class Engine:
         for sym in [s for s in self.trades if s not in positions]:
             t = self.trades.pop(sym)
             self._cancel_tp(sym, t)  # stop hit: the limit take-profit must not stay behind
-            px = self.broker.price(sym)
+            now_px = self.broker.price(sym)
             sign = 1 if t.side == "long" else -1
             avg = t.avg_entry or t.entry
-            fees = self.cfg.fees.taker * (avg + px) * t.qty
+            # the exchange closed it at its stop or its take-profit: count whichever of the two
+            # the price is nearest now, not the price a few seconds later (that made stops look
+            # far worse than they were, live ADA -4.43 for a 0.3% stop)
+            px = min((t.stop, t.take_profit), key=lambda x: abs(x - now_px)) \
+                if t.take_profit > 0 else t.stop
+            fee = self.cfg.fees.maker if px == t.take_profit and self.limit_tp else self.cfg.fees.taker
+            f = self.cfg.fees
+            fees = (f.maker if self.cfg.entry_order == "maker" else f.taker) * avg * t.qty \
+                + fee * px * t.qty
             pnl = sign * (px - avg) * t.qty - fees + t.realized
             log.info("%s position gone (exchange stop/TP), approx pnl %.2f", sym, pnl)
             self.risk.record_close(now, sym, pnl, pnl < 0, self.tf_ms)

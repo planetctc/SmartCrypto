@@ -46,6 +46,7 @@ tp_order: maker    # 止盈方式：maker = 开仓后挂只减仓的限价单止
 # ---------------- 风控（减少亏损的关键） ----------------
 risk:
   daily_max_loss_pct: 0.30     # 一天亏到当天开始资金的 30% 就全部平仓，停到第二天
+  live_only_limits: true      # 日亏上限和最低资金停止只在真钱（live）时生效；模拟盘全天跑，不卡单
   day_reset_utc_offset: 8      # "一天"按 UTC+8（北京/新加坡/马来西亚时间）00:00 重置
   max_loss_per_trade_usd: 10   # 单笔止损+手续费最多亏多少，超过就自动缩小仓位
   min_equity_stop_usd: 50      # 账户总资金低于这个数，机器人完全停止（设 0 关闭）

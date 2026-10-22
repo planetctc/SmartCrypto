@@ -10,6 +10,9 @@ import yaml
 @dataclass
 class RiskConfig:
     daily_max_loss_pct: float = 0.30
+    # True: the daily loss stop and min_equity_stop only apply with real money (mode: live);
+    # demo / paper keep trading all day so there is more data to learn from
+    live_only_limits: bool = False
     day_reset_utc_offset: int = 8
     max_loss_per_trade_usd: float = 10.0
     min_equity_stop_usd: float = 50.0

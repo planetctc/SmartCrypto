@@ -273,8 +273,17 @@ class BitgetBroker:
 
     def close(self, symbol: str, pos: Position) -> float:
         side = "sell" if pos.side == "long" else "buy"
-        order = self.ex.create_order(symbol, "market", side, pos.qty, None,
-                                     {"marginMode": self.order_margin_mode, "hedged": False, "reduceOnly": True})
+        try:
+            order = self.ex.create_order(symbol, "market", side, pos.qty, None,
+                                         {"marginMode": self.order_margin_mode, "hedged": False,
+                                          "reduceOnly": True})
+        except ccxt.ExchangeError as e:
+            if "25227" not in str(e) and "No position" not in str(e):
+                raise
+            # the exchange stop / take-profit closed it a moment before our close got there
+            log.info("close %s: position already closed by the exchange", symbol)
+            self.cancel_triggers(symbol)
+            return self.price(symbol)
         self.cancel_triggers(symbol)
         return float(order.get("average") or order.get("price") or self.price(symbol))
 

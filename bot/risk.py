@@ -74,6 +74,8 @@ class RiskManager:
         self.cfg = cfg
         self.r = cfg.risk
         self.state = state or RiskState()
+        # daily loss stop / min equity stop in force? (live_only_limits turns them off off-live)
+        self.limits_on = not (self.r.live_only_limits and cfg.mode != "live")
 
     # ---------- day bookkeeping ----------
     def day_key(self, now_ms: int) -> int:
@@ -88,12 +90,14 @@ class RiskManager:
             self.state.trades_today = 0
             self.state.opens_today = 0
             self.state.realized_today = 0.0
-        if self.r.min_equity_stop_usd > 0 and equity < self.r.min_equity_stop_usd:
+        if self.limits_on and self.r.min_equity_stop_usd > 0 and equity < self.r.min_equity_stop_usd:
             self.state.killed = True
 
     def daily_loss_hit(self, now_ms: int, equity: float) -> bool:
         """True when today's drawdown reached the limit. Caller must flatten all positions."""
         self.update_equity(now_ms, equity)
+        if not self.limits_on:
+            return False
         if self.state.halted_day == self.state.day_key:
             return True
         floor = self.state.day_start_equity * (1 - self.r.daily_max_loss_pct)
@@ -103,6 +107,8 @@ class RiskManager:
         return False
 
     def daily_loss_budget_left(self, equity: float) -> float:
+        if not self.limits_on:
+            return float("inf")
         floor = self.state.day_start_equity * (1 - self.r.daily_max_loss_pct)
         return max(0.0, equity - floor)
 
@@ -128,7 +134,7 @@ class RiskManager:
 
     # ---------- entry approval ----------
     def can_open(self, now_ms: int, symbol: str, open_positions: int, equity: float) -> tuple[bool, str]:
-        if self.state.killed:
+        if self.state.killed and self.limits_on:
             return False, f"equity below {self.r.min_equity_stop_usd} USDT, bot stopped"
         if self.daily_loss_hit(now_ms, equity):
             return False, "daily loss limit reached, waiting for next day"

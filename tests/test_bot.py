@@ -23,6 +23,7 @@ def cfg() -> Config:
     c = load_config(ROOT / "config.yaml")
     c.timeframe, c.trend_timeframe = "5m", "1h"
     c.entry_order, c.maker_timeout_seconds, c.tp_order = "market", 60, "market"
+    c.risk.live_only_limits = False  # the limit mechanics below are what real money runs with
     return c
 
 
@@ -1057,3 +1058,30 @@ def test_combo_takes_rejected_bounce_into_fast_average_in_a_downtrend():
     c.strategy.signal_type = "breakout"
     assert _side(row, c) is None
     assert load_config(ROOT / "config_hf.yaml").strategy.signal_type == "combo"
+
+
+def test_demo_ignores_daily_loss_and_min_equity_stops_live_keeps_them():
+    c = load_config(ROOT / "config_hf.yaml")
+    assert c.mode == "demo" and c.risk.live_only_limits
+    rm = RiskManager(c)
+    rm.update_equity(0, 100)
+    assert not rm.daily_loss_hit(1, 10) and rm.can_open(1, "BTC/USDT:USDT", 0, 10)[0]
+    c.mode = "live"
+    live = RiskManager(c)
+    live.update_equity(0, 100)
+    assert live.daily_loss_hit(1, 69)
+
+
+def test_close_after_exchange_already_closed_is_not_an_error():
+    import ccxt
+    from bot.exchange import BitgetBroker
+    br = BitgetBroker.__new__(BitgetBroker)
+    br.cfg, br.uta = cfg(), True
+
+    class Ex:
+        def create_order(self, *a, **k):
+            raise ccxt.ExchangeError('bitget {"code":"25227","msg":"No position available to close"}')
+    br.ex = Ex()
+    br.cancel_triggers = lambda s: None
+    br.price = lambda s: 2381.0
+    assert br.close("ETH/USDT:USDT", Position("ETH/USDT:USDT", "short", 0.1, 2382, 0, 0, 10)) == 2381.0
