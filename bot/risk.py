@@ -5,9 +5,14 @@ so the same rules run in backtest, paper, demo and live modes.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass, field
 
 from .config import Config
+
+log = logging.getLogger("bot.risk")
+RECENT = 10       # live results remembered per coin
+MIN_RECENT = 3    # results needed before a coin's record changes its size
 
 MS_PER_DAY = 86_400_000
 MS_PER_MIN = 60_000
@@ -52,6 +57,7 @@ class RiskState:
     opens_today: int = 0
     realized_today: float = 0.0
     equity_baseline: float = 0.0   # real account equity when the bot first started (capital_usd mode)
+    recent: dict[str, list[float]] = field(default_factory=dict)  # coin -> last RECENT live pnls
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -107,6 +113,7 @@ class RiskManager:
                      bar_ms: int) -> None:
         self.state.realized_today += pnl
         self.state.trades_today += 1
+        self.state.recent[symbol] = (self.state.recent.get(symbol, []) + [round(pnl, 4)])[-RECENT:]
         if pnl < 0:
             self.state.consecutive_losses += 1
             if self.r.max_consecutive_losses and \
@@ -136,7 +143,8 @@ class RiskManager:
 
     def size(self, entry: float, stop: float, side: str, strength: float,
              free_balance: float, equity: float,
-             leverage: int | None = None, open_risk: float = 0.0) -> tuple[Sizing | None, str]:
+             leverage: int | None = None, open_risk: float = 0.0,
+             symbol: str = "") -> tuple[Sizing | None, str]:
         """Turn a signal into a position size, or reject it with a reason. open_risk is what the
         trades already open would lose together if all their stops hit; it comes off today's
         loss budget so many coins open at once can never add up to more than the daily limit."""
@@ -151,6 +159,12 @@ class RiskManager:
         strength = min(1.0, max(0.0, strength))
         margin = cfg.fixed_margin_usd or \
             cfg.min_margin_usd + (cfg.max_margin_usd - cfg.min_margin_usd) * strength
+        # learn from live results: a coin that has been losing lately trades at half size
+        # (never below the minimum, never skipped), so money flows to the coins that work
+        recent = self.state.recent.get(symbol, [])
+        if len(recent) >= MIN_RECENT and sum(recent) < 0:
+            margin = max(cfg.min_margin_usd, margin / 2)
+            log.info("%s last %d trades %.2f: half size", symbol, len(recent), sum(recent))
         f = cfg.fees
         entry_cost = f.maker if cfg.entry_order == "maker" else f.taker + f.slippage
         cost_pct = stop_pct + entry_cost + f.taker + f.slippage  # exits are market orders

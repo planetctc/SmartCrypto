@@ -974,3 +974,25 @@ def test_open_trades_together_never_risk_more_than_the_daily_limit():
     assert sizing is None and "loss budget" in why
     small, _ = rm.size(3000, 2985, "long", 1.0, 100, 100, 100, open_risk=26)
     assert small is not None and small.margin < ok.margin
+
+
+def test_coin_that_keeps_losing_trades_at_half_size_never_skipped():
+    c = cfg()
+    c.fixed_margin_usd = c.max_margin_usd = 10
+    rm = RiskManager(c)
+    rm.state.day_start_equity = 100.0
+    full, _ = rm.size(3000, 2985, "long", 1.0, 100, 100, 100, symbol="ETH/USDT:USDT")
+    for pnl in (-1.0, -1.0, 0.5):
+        rm.record_close(1, "ETH/USDT:USDT", pnl, pnl < 0, 60_000)
+    half, _ = rm.size(3000, 2985, "long", 1.0, 100, 100, 100, symbol="ETH/USDT:USDT")
+    other, _ = rm.size(3000, 2985, "long", 1.0, 100, 100, 100, symbol="BTC/USDT:USDT")
+    assert half.margin == pytest.approx(max(c.min_margin_usd, full.margin / 2))
+    assert other.margin == full.margin
+
+
+def test_closed_trades_go_to_the_journal(tmp_path):
+    c, b, e, old = _replace_engine(tmp_path, protected=False)
+    del b.pos[old]   # exchange stop hit
+    e.step()
+    rows = (tmp_path / "trades.csv").read_text(encoding="utf-8").splitlines()
+    assert rows[0].startswith("closed_utc,coin") and ",ETH,long," in rows[1]

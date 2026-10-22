@@ -1,11 +1,13 @@
 """Real-time loop: read prices, manage open trades, open new ones, enforce risk limits."""
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import math
 import time
 from dataclasses import asdict, dataclass, field, fields
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Config
@@ -256,6 +258,27 @@ class Engine:
             pnl = sign * (px - avg) * t.qty - fees + t.realized
             log.info("%s position gone (exchange stop/TP), approx pnl %.2f", sym, pnl)
             self.risk.record_close(now, sym, pnl, pnl < 0, self.tf_ms)
+            self._journal(sym, t.side, avg, px, "exchange stop/TP", pnl, t.opened_ms, now)
+
+    def _journal(self, sym: str, side: str, entry: float, exit_: float, why: str, pnl: float,
+                 opened_ms: int, now: int) -> None:
+        """Every closed live trade, one row in data/trades.csv, for the daily review."""
+        path = self.state_path.parent / "trades.csv"
+        new = not path.exists()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                if new:
+                    w.writerow(["closed_utc", "coin", "side", "entry", "exit", "why", "pnl",
+                                "minutes"])
+                w.writerow([datetime.fromtimestamp(now / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                            sym.split("/")[0], side, f"{entry:.10g}", f"{exit_:.10g}", why,
+                            f"{pnl:.2f}", round((now - opened_ms) / 60_000)])
+        except OSError as e:
+            log.warning("trade journal not written: %s", e)
+        today = self.risk.state
+        log.info("TODAY %d trades, pnl %.2f", today.trades_today, today.realized_today)
 
     def _close_all(self, now: int, positions: dict[str, Position]) -> None:
         for sym, p in positions.items():
@@ -271,6 +294,7 @@ class Engine:
         log.info("CLOSE %s %s qty=%s @ %.10g (%s) pnl≈%.2f", sym, p.side, p.qty, fill, why, pnl)
         stopped = pnl < 0 and why not in ("max hold time", "replaced by new signal")
         self.risk.record_close(now, sym, pnl, stopped, self.tf_ms)
+        self._journal(sym, p.side, p.entry, fill, why, pnl, t.opened_ms if t else now, now)
 
     def _refresh_bars(self, sym: str, now: int,
                       positions: dict[str, Position]) -> tuple[int, bool] | None:
@@ -369,7 +393,7 @@ class Engine:
         tp = tps[-1]
         lev = self.broker.leverage_for(sym) if hasattr(self.broker, "leverage_for") else None
         sizing, why = self.risk.size(price, stop, sig.side, sig.strength, free, equity, lev,
-                                     self._open_risk())
+                                     self._open_risk(), sym)
         if sizing is None:
             log.info("%s signal skipped: %s", sym, why)
             return

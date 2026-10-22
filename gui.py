@@ -207,6 +207,10 @@ def _friendly(line: str) -> str:
     if r := re.match(r"SCAN (\d+) coins up=(\d+) down=(\d+) flat=(\d+) signals=(\d+)", msg):
         found = f"{r[5]} 个信号" if r[5] != "0" else "没有信号"
         return (f"{t}  扫描 {r[1]} 个币：大方向向上 {r[2]}、向下 {r[3]}、不明 {r[4]}，{found}")
+    if r := re.match(r"TODAY (\d+) trades, pnl (\S+)", msg):
+        return f"{t}  今天已平 {r[1]} 单，合计 {float(r[2]):+.2f} USDT"
+    if r := re.match(r"(\S+) last (\d+) trades (\S+): half size", msg):
+        return f"{t}  {coin(r[1])} 最近 {r[2]} 单合计 {float(r[3]):+.2f}，这单保证金减半"
     if r := re.match(r"no futures market for (\S+) on Bitget", msg):
         return f"{t}  {coin(r[1])} Bitget 没有合约，跳过"
     if r := re.match(r"cancel \S+ on (\S+): already gone", msg):
