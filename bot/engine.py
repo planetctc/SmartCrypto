@@ -295,6 +295,17 @@ class Engine:
             self._try_open(sym, sig, now, positions)
         return trend, sig is not None
 
+    def _open_risk(self) -> float:
+        """USDT lost if every open trade hit its stop now (trades already at break-even add 0)."""
+        f = self.cfg.fees
+        risk = 0.0
+        for t in self.trades.values():
+            sign = 1 if t.side == "long" else -1
+            qty = t.qty + t.add_qty
+            risk += max(0.0, sign * ((t.avg_entry or t.entry) - t.stop)) * qty \
+                + qty * t.stop * (f.taker + f.slippage)
+        return risk
+
     def _replaceable(self, sym: str, positions: dict[str, Position]) -> list[str]:
         """replace_on_new_signal: other coins' waiting limit entries and trades whose stop is
         not yet at break-even but which already show a profit after fees. A new signal on `sym`
@@ -357,7 +368,8 @@ class Engine:
         tps = [self._round(sym, x, sig.side) for x in plan.take_profits]
         tp = tps[-1]
         lev = self.broker.leverage_for(sym) if hasattr(self.broker, "leverage_for") else None
-        sizing, why = self.risk.size(price, stop, sig.side, sig.strength, free, equity, lev)
+        sizing, why = self.risk.size(price, stop, sig.side, sig.strength, free, equity, lev,
+                                     self._open_risk())
         if sizing is None:
             log.info("%s signal skipped: %s", sym, why)
             return

@@ -136,8 +136,10 @@ class RiskManager:
 
     def size(self, entry: float, stop: float, side: str, strength: float,
              free_balance: float, equity: float,
-             leverage: int | None = None) -> tuple[Sizing | None, str]:
-        """Turn a signal into a position size, or reject it with a reason."""
+             leverage: int | None = None, open_risk: float = 0.0) -> tuple[Sizing | None, str]:
+        """Turn a signal into a position size, or reject it with a reason. open_risk is what the
+        trades already open would lose together if all their stops hit; it comes off today's
+        loss budget so many coins open at once can never add up to more than the daily limit."""
         cfg, r = self.cfg, self.r
         lev = leverage or cfg.leverage
         stop_pct = abs(entry - stop) / entry
@@ -154,7 +156,9 @@ class RiskManager:
         cost_pct = stop_pct + entry_cost + f.taker + f.slippage  # exits are market orders
 
         # cap loss per trade and keep inside what is left of today's loss budget
-        loss_cap = min(r.max_loss_per_trade_usd, self.daily_loss_budget_left(equity))
+        loss_cap = min(r.max_loss_per_trade_usd, self.daily_loss_budget_left(equity) - open_risk)
+        if loss_cap <= 0:
+            return None, "open trades already use today's loss budget"
         if margin * lev * cost_pct > loss_cap:
             margin = loss_cap / (lev * cost_pct)
         margin = min(margin, free_balance * 0.95)

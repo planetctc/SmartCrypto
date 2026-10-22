@@ -59,7 +59,7 @@ def test_sizing_rejects_wide_and_tight_stops():
 
 def test_cross_margin_allows_wide_stop_that_isolated_would_liquidate():
     c = cfg()
-    assert c.margin_mode == "cross" and c.max_open_positions == 1
+    assert c.margin_mode == "cross" and c.max_open_positions == 8
     rm = RiskManager(c)
     rm.update_equity(0, 100)
     s, _ = rm.size(100.0, 99.0, "long", 1, 100, 100)              # 1% stop at 100x
@@ -244,7 +244,8 @@ def test_engine_flattens_everything_on_daily_loss(tmp_path):
 def test_hf_config_loads():
     c = load_config(ROOT / "config_hf.yaml")
     assert (c.timeframe, c.trend_timeframe, c.entry_order, c.tp_order) == ("5m", "1h", "market", "maker")
-    assert c.replace_on_new_signal and c.strategy.take_profit_r == [1.0]
+    assert not c.replace_on_new_signal and c.max_open_positions == 8
+    assert c.strategy.take_profit_r == [1.0]
     assert c.risk.max_trades_per_day == 40 and c.risk.daily_max_loss_pct == 0.30
     assert (c.leverage, c.min_margin_usd, c.max_margin_usd) == (100, 5, 15)
 
@@ -536,9 +537,22 @@ def test_take_profit_ladder_keeps_distinct_levels_on_eth():
 def test_only_one_position_even_with_two_signals_in_one_loop(tmp_path):
     c = cfg()
     c.symbols, c.state_file = ["BTC/USDT:USDT", "ETH/USDT:USDT"], str(tmp_path / "s.json")
+    c.max_open_positions = 1
     b = FakeBroker(_df_ending_in_signal(c))   # same candles -> both coins signal together
     Engine(c, b).step()
     assert len(b.opened) == 1
+
+
+def test_every_coin_gets_its_own_trade_and_never_two_on_one_coin(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT", "ETH/USDT:USDT"], str(tmp_path / "s.json")
+    b = FakeBroker(_df_ending_in_signal(c))   # same candles -> both coins signal together
+    e = Engine(c, b)
+    e.step()
+    assert sorted(o[0] for o in b.opened) == ["BTC/USDT:USDT", "ETH/USDT:USDT"]
+    b.now += 1000
+    e.step()
+    assert len(b.opened) == 2
 
 
 def test_scale_in_off_opens_first_batch_only(tmp_path):
@@ -948,3 +962,15 @@ def test_coin_without_futures_market_is_skipped_not_fatal(tmp_path):
     with pytest.raises(KeyboardInterrupt):
         e.run()
     assert c.symbols == ["BTC/USDT:USDT"]
+
+
+def test_open_trades_together_never_risk_more_than_the_daily_limit():
+    c = cfg()
+    rm = RiskManager(c)
+    rm.state.day_start_equity = 100.0
+    ok, _ = rm.size(3000, 2985, "long", 1.0, 100, 100, 100, open_risk=0)
+    assert ok is not None
+    sizing, why = rm.size(3000, 2985, "long", 1.0, 100, 100, 100, open_risk=30)
+    assert sizing is None and "loss budget" in why
+    small, _ = rm.size(3000, 2985, "long", 1.0, 100, 100, 100, open_risk=26)
+    assert small is not None and small.margin < ok.margin

@@ -161,6 +161,7 @@ REASONS = {"managed stop hit": "跟踪止损", "max hold time": "持仓超时", 
            "take-profit": "止盈"}
 SKIPS = {"daily loss limit": "今天已亏到上限", "consecutive losses": "连亏暂停中",
          "cooling down": "刚止损，冷却中", "max open positions": "同时持仓已满",
+         "loss budget": "手上几单的止损加起来已到今天亏损上限",
          "trades per day": "今天单数已满", "price already ran": "价格已经跑远",
          "too close to liquidation": "止损太靠近爆仓价", "wider than max": "波动太大",
          "closer than min": "止损太近", "below min": "仓位太小", "exchange minimum": "低于交易所最小下单量"}

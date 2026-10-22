@@ -32,8 +32,8 @@ leverage: 100          # 杠杆倍数（逐仓）
 margin_mode: cross      # 全仓：整个账户一起扛，爆仓价离得远，止损可以放宽（isolated = 逐仓）
 min_margin_usd: 5      # 每单最少保证金（信号一般时）
 max_margin_usd: 15     # 每单最多保证金（信号强时）
-max_open_positions: 1  # 同时只开一单
-replace_on_new_signal: true  # 宁杀错不放过：别的币出新信号时，手上那单还没保本就平掉换新单
+max_open_positions: 8  # 每个币最多一单，不同币可以同时开（不错过信号）
+replace_on_new_signal: false  # 不同币可以同时开，不用平掉换单
 
 # 进场方式:
 #   market = 市价单，马上成交，手续费 0.06%
