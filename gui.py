@@ -326,12 +326,17 @@ class Panel(tk.Tk):
         self.stop_btn = self._button(ctrl, "■  停止", RED, self.stop)
         self.stop_btn.pack(side="left", padx=4)
         self._button(ctrl, "设置 API key", "#334155", self.key_dialog).pack(side="right")
-        self.tune_btn = self._button(ctrl, "回测比较", BLUE, self.tune)
-        self.tune_btn.pack(side="right", padx=(0, 8))
-        self.rec_btn = self._button(ctrl, "记录盘口", BLUE, self.toggle_record)
-        self.rec_btn.pack(side="right", padx=(0, 8))
         self.key_label = self._label(ctrl, "", 10, MUTED)
         self.key_label.pack(side="right", padx=8)
+
+        # research tools on their own row so they never get pushed off a narrow window
+        tools = tk.Frame(self, bg=BG)
+        tools.pack(fill="x", padx=16, pady=(2, 4))
+        self._label(tools, "工具", 11, MUTED).pack(side="left")
+        self.tune_btn = self._button(tools, "回测比较", BLUE, self.tune)
+        self.tune_btn.pack(side="left", padx=(6, 8))
+        self.rec_btn = self._button(tools, "记录盘口", BLUE, self.toggle_record)
+        self.rec_btn.pack(side="left")
 
         pick = tk.Frame(self, bg=BG)
         pick.pack(fill="x", padx=16, pady=(2, 4))
