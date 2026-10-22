@@ -233,6 +233,11 @@ def _friendly(line: str) -> str:
         return (f"{t}  {coin(r[1])} 平仓 @ {r[2]}（{REASONS.get(r[3], r[3])}），"
                 f"约 {float(r[4]):+.2f} USDT")
     if r := re.match(r"(\S+) signal skipped: (.*)", msg):
+        if m := re.match(r"free balance (\S+) too small", r[2]):
+            return f"{t}  {coin(r[1])} 有信号但没开单：可用余额只剩 {m[1]}"
+        if m := re.match(r"loss budget left (\S+), open trades risk (\S+)", r[2]):
+            return (f"{t}  {coin(r[1])} 有信号但没开单：今天离 -30% 只剩 {m[1]}，"
+                    f"手上单的止损占 {m[2]}")
         why = next((v for k, v in SKIPS.items() if k in r[2]), r[2])
         return f"{t}  {coin(r[1])} 有信号但没开单：{why}"
     if msg.startswith("RISK STOP"):

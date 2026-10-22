@@ -13,6 +13,7 @@ from .config import Config
 log = logging.getLogger("bot.risk")
 RECENT = 10       # live results remembered per coin
 MIN_RECENT = 3    # results needed before a coin's record changes its size
+MIN_MARGIN_USD = 1.0  # smallest trade margin the risk caps may shrink a trade to
 
 MS_PER_DAY = 86_400_000
 MS_PER_MIN = 60_000
@@ -175,9 +176,15 @@ class RiskManager:
             return None, "open trades already use today's loss budget"
         if margin * lev * cost_pct > loss_cap:
             margin = loss_cap / (lev * cost_pct)
+        by_free = free_balance * 0.95 < margin
         margin = min(margin, free_balance * 0.95)
-        if margin < cfg.min_margin_usd * 0.999:
-            return None, f"margin {margin:.2f} below min {cfg.min_margin_usd} after risk caps"
+        # risk caps may shrink a trade below the panel's margin: still trade it, smaller,
+        # down to MIN_MARGIN_USD (more small trades beat a bot that sits idle)
+        if margin < MIN_MARGIN_USD:
+            if by_free:
+                return None, f"free balance {free_balance:.2f} too small"
+            return None, (f"loss budget left {self.daily_loss_budget_left(equity):.2f}, "
+                          f"open trades risk {open_risk:.2f}")
 
         notional = margin * lev
         liq = liquidation_price(entry, side, effective_leverage(cfg, notional, equity, lev),

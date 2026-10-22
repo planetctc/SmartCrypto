@@ -72,7 +72,9 @@ def test_sizing_respects_remaining_daily_budget():
     rm = RiskManager(cfg())
     rm.update_equity(0, 100)
     s, why = rm.size(100.0, 99.6, "long", 1, 100, equity=72)  # only 2 USDT left before -30%
-    assert s is None and "below min" in why
+    assert s and s.margin < rm.cfg.min_margin_usd and s.expected_loss <= 2 + 1e-9  # smaller, not skipped
+    s, why = rm.size(100.0, 99.6, "long", 1, 100, equity=70.1)  # 0.1 left: too small to trade
+    assert s is None and "loss budget left 0.10" in why
 
 
 def test_daily_loss_limit_and_reset_next_day():
