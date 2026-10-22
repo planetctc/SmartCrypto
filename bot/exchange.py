@@ -109,6 +109,9 @@ class BitgetBroker:
             for side in ("long", "short"):
                 self.ex.set_leverage(lev, symbol, {"holdSide": side})
 
+    def has_symbol(self, symbol: str) -> bool:
+        return symbol in self.ex.markets
+
     def setup_symbol(self, symbol: str) -> None:
         try:
             self.ex.set_position_mode(False, symbol)  # one-way mode
@@ -301,6 +304,9 @@ class PaperBroker:
         self.limits: dict[str, dict] = {}  # order id -> simulated resting maker order
         self.limit_tps: dict[str, str] = {}  # symbol -> id of its resting limit take-profit
         self._next_id = 1
+
+    def has_symbol(self, symbol: str) -> bool:
+        return symbol in self.ex.markets
 
     def setup_symbol(self, symbol: str) -> None:
         pass

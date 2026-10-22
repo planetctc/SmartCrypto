@@ -928,3 +928,16 @@ def test_old_trade_is_kept_when_the_new_signal_is_refused_by_sizing(tmp_path):
     c.risk.max_stop_pct = c.risk.min_stop_pct * 1.0001  # every new stop is "too wide"
     e.step()
     assert old not in b.closed and old in e.trades and not b.opened
+
+
+def test_coin_without_futures_market_is_skipped_not_fatal(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT", "BGB/USDT:USDT"], str(tmp_path / "s.json")
+    b = FakeBroker(_df_ending_in_signal(c))
+    b.has_symbol = lambda s: s != "BGB/USDT:USDT"
+    b.setup_symbol = lambda s: None if s != "BGB/USDT:USDT" else 1 / 0
+    e = Engine(c, b)
+    e.step = lambda: (_ for _ in ()).throw(KeyboardInterrupt)
+    with pytest.raises(KeyboardInterrupt):
+        e.run()
+    assert c.symbols == ["BTC/USDT:USDT"]

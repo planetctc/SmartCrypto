@@ -155,6 +155,7 @@ def cmd_tune(cfg, args):
     third is reported separately as the test the choice did not see. This is what the control
     panel's 回测比较 button runs.
     """
+    import ccxt
     from bot.backtest import resample, run_backtest
     from bot.config import load_config
     from bot.data import download, load_csv
@@ -169,7 +170,13 @@ def cmd_tune(cfg, args):
     base = {}
     for i, sym in enumerate(cfg.symbols, 1):
         say(f"下载 {sym.split('/')[0]} 最近 {args.days} 天的 K 线（{i}/{len(cfg.symbols)}）…")
-        base[sym] = load_csv(download(sym, "1m", args.days, args.exchange, args.data_dir))
+        try:
+            base[sym] = load_csv(download(sym, "1m", args.days, args.exchange, args.data_dir))
+        except ccxt.BadSymbol:
+            say(f"{sym.split('/')[0]} 在 Bitget 没有合约，跳过")
+    cfg.symbols = list(base)
+    if not base:
+        sys.exit("选的币 Bitget 都没有合约")
     t0 = min(f["ts"].iloc[0] for f in base.values())
     t1 = max(f["ts"].iloc[-1] for f in base.values())
     cut = t0 + (t1 - t0) * 2 / 3

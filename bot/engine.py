@@ -88,6 +88,13 @@ class Engine:
 
     # ---------- main loop ----------
     def run(self) -> None:
+        has = getattr(self.broker, "has_symbol", None)
+        missing = [s for s in self.cfg.symbols if has and not has(s)]
+        for s in missing:
+            log.warning("no futures market for %s on Bitget, skipping it", s)
+        self.cfg.symbols = [s for s in self.cfg.symbols if s not in missing]
+        if not self.cfg.symbols:
+            raise SystemExit("选的币 Bitget 都没有合约")
         for s in self.cfg.symbols:
             self.broker.setup_symbol(s)
         log.info("started: mode=%s symbols=%s leverage=%sx margin %s-%s USDT",

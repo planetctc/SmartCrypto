@@ -76,6 +76,7 @@ def record(symbols: list[str], data_dir: str, interval: float = 1.0) -> None:
     """Poll until stopped. Status for the control panel goes to data/record_status.txt."""
     ex = ccxt.bitget({"enableRateLimit": True, "options": {"defaultType": "swap"}})
     ex.load_markets()
+    symbols = [s for s in symbols if s in ex.markets]  # skip coins Bitget has no futures for
     rec = Recorder(ex, symbols, Path(data_dir) / "orderflow")
     status = Path(data_dir) / "record_status.txt"
     started = time.time()

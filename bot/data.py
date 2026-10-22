@@ -37,6 +37,8 @@ def download(symbol: str, tf: str, days: int, exchange: str = "bitget",
              data_dir: str = "data") -> Path:
     ex = getattr(ccxt, exchange)({"enableRateLimit": True, "options": {"defaultType": "swap"}})
     ex.load_markets()
+    if symbol not in ex.markets:
+        raise ccxt.BadSymbol(f"{exchange} has no futures market {symbol}")
     step = TF_MS[tf]
     now = ex.milliseconds()
     since = now - days * 86_400_000
