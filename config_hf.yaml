@@ -57,7 +57,8 @@ risk:
 
 # ---------------- 策略参数 ----------------
 strategy:
-  signal_type: breakout     # 信号类型：breakout 突破 / pullback 顺势回踩 / reversion 超买超卖反转（用「回测比较」挑）
+  signal_type: breakout     # 信号类型：breakout 突破 / pullback 顺势回踩 / reversion 超买超卖反转 / score 综合打分（用「回测比较」挑）
+  min_score: 5              # 综合打分：趋势、均线、MACD、KDJ、RSI、布林带、放量、K线形态、突破 9 项，净 5 项同向才开单
   fast_ema: 20              # 顺势回踩：回踩到这条快线再收回去才进场
   bb_period: 20             # 超买超卖反转：布林带周期
   bb_std: 2.5               #   价格超出布林带几倍标准差才算太远

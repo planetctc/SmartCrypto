@@ -23,10 +23,17 @@ class RiskConfig:
     max_trades_per_day: int = 0      # 0 = no limit
 
 
+# the indicators the score signal adds up (see strategy.votes)
+VOTES = {"trend": "大趋势", "ema": "均线排列", "macd": "MACD", "kdj": "KDJ", "rsi": "RSI",
+         "boll": "布林带", "volume": "放量", "candle": "K线形态", "breakout": "突破"}
+
+
 @dataclass
 class StrategyConfig:
     # breakout = 突破前高/前低; pullback = 顺势回踩均线; reversion = 超买超卖反转（布林带 + RSI）
+    # score = 综合打分：趋势、均线、MACD、KDJ、RSI、布林带、成交量、K 线形态、突破 9 项一起投票
     signal_type: str = "breakout"
+    min_score: int = 5               # score: enter when this many of the 9 votes agree (net)
     trend_ema: int = 50
     fast_ema: int = 20               # pullback: the average price pulls back to
     bb_period: int = 20              # reversion: Bollinger band length and width
@@ -121,8 +128,10 @@ def validate(cfg: Config) -> None:
     if not 0 < r.min_stop_pct < r.max_stop_pct:
         raise ValueError("need 0 < risk.min_stop_pct < risk.max_stop_pct")
     s = cfg.strategy
-    if s.signal_type not in ("breakout", "pullback", "reversion"):
-        raise ValueError("strategy.signal_type must be breakout, pullback or reversion")
+    if s.signal_type not in ("breakout", "pullback", "reversion", "score"):
+        raise ValueError("strategy.signal_type must be breakout, pullback, reversion or score")
+    if not 1 <= s.min_score <= len(VOTES):
+        raise ValueError(f"strategy.min_score must be 1..{len(VOTES)}")
     if not 0 < s.scale_in_frac <= 1 or s.scale_in_at_r < 0:
         raise ValueError("need 0 < strategy.scale_in_frac <= 1 and scale_in_at_r >= 0")
     if not s.take_profit_r or s.take_profit_r != sorted(s.take_profit_r) or s.take_profit_r[0] <= 0:

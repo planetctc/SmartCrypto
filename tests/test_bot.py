@@ -587,9 +587,9 @@ def test_tune_variants_cover_every_signal_and_config_is_valid():
     import main
     from bot.config import validate
     variants = main.tune_variants()
-    assert len(variants) == 6
-    assert {v[1]["timeframe"] for v in variants} == {"15m", "30m", "1h"}
-    assert {v[1]["entry_order"] for v in variants} == {"market", "maker"}
+    assert len(variants) == 13
+    assert {v[1]["timeframe"] for v in variants} == {"5m", "15m", "30m", "1h"}
+    assert {v[2]["signal_type"] for v in variants} == {"score", "breakout"}
     for _, top, change in variants:
         c = load_config(ROOT / "config.yaml")
         for k, v in top.items():
@@ -622,3 +622,35 @@ def test_normal_mode_is_1h_breakout_with_limit_entry_waiting_one_bar():
     assert (c.timeframe, c.trend_timeframe, c.entry_order) == ("1h", "4h", "maker")
     assert c.strategy.signal_type == "breakout"
     assert c.maker_timeout_seconds * 1000 == TF_MS["1h"]
+
+
+def test_score_signal_counts_votes_and_explains_itself():
+    from bot.config import VOTES
+    c = cfg()
+    c.strategy.signal_type, c.strategy.min_score, c.strategy.volume_factor = "score", 5, 0
+    df = synthetic(6000, seed=2)
+    p = prepare(df, resample(df, c.trend_timeframe), c)
+    cols = [f"v_{v}" for v in VOTES]
+    assert p[cols].isin([-1, 0, 1]).all().all()
+    assert (p["score"] == p[cols].sum(axis=1)).all()
+    sigs = [(r, s) for r, s in ((r, signal_at(r, c)) for _, r in p.iterrows()) if s]
+    assert sigs
+    for r, s in sigs:
+        want = 1 if s.side == "long" else -1
+        assert r["score"] * want >= 5 > r["prev_score"] * want
+        assert "综合" in s.reason
+        if s.side == "long":
+            assert s.stop < s.entry < s.take_profit
+        else:
+            assert s.take_profit < s.entry < s.stop
+
+
+def test_score_has_no_lookahead():
+    c = cfg()
+    c.strategy.signal_type = "score"
+    df = synthetic(3000, seed=3)
+    full = prepare(df, resample(df, c.trend_timeframe), c)
+    cut = df.iloc[:2000]
+    part = prepare(cut, resample(cut, c.trend_timeframe), c)
+    pd.testing.assert_series_equal(full["score"].iloc[:1990].reset_index(drop=True),
+                                   part["score"].iloc[:1990].reset_index(drop=True))

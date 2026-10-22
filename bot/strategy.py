@@ -13,7 +13,7 @@ import math
 import numpy as np
 import pandas as pd
 
-from .config import Config
+from .config import VOTES, Config
 
 TF_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
          "1h": 3_600_000, "2h": 7_200_000, "4h": 14_400_000}
@@ -79,6 +79,54 @@ def prepare(df: pd.DataFrame, df_trend: pd.DataFrame, cfg: Config) -> pd.DataFra
     out = pd.merge_asof(out.sort_values("close_time"), t.sort_values("close_time"),
                         on="close_time", direction="backward")
     out["trend"] = out["trend"].fillna(0).astype(int)
+    if s.signal_type == "score":
+        out = votes(out, cfg)
+    return out
+
+
+def votes(out: pd.DataFrame, cfg: Config) -> pd.DataFrame:
+    """One +1 (bullish) / -1 (bearish) / 0 column per indicator, plus their sum in "score".
+
+    Every column only uses the bar itself and earlier bars, so it is the same live and in
+    backtests. Indicator settings are the common defaults traders use.
+    """
+    s = cfg.strategy
+    c, o, h, lo = out["close"], out["open"], out["high"], out["low"]
+    sign = lambda cond_up, cond_down: np.where(cond_up, 1, np.where(cond_down, -1, 0))  # noqa: E731
+
+    out["v_trend"] = out["trend"]
+    slow = ema(c, 50)
+    out["v_ema"] = sign((c > out["ema_fast"]) & (out["ema_fast"] > slow),
+                        (c < out["ema_fast"]) & (out["ema_fast"] < slow))
+    macd = ema(c, 12) - ema(c, 26)
+    hist = macd - ema(macd, 9)
+    out["v_macd"] = sign((hist > 0) & (hist > hist.shift(1)), (hist < 0) & (hist < hist.shift(1)))
+    # KDJ (9,3,3): K above D and not yet overbought is bullish, mirror for bearish
+    low9, high9 = lo.rolling(9).min(), h.rolling(9).max()
+    rsv = 100 * (c - low9) / (high9 - low9).replace(0, np.nan)
+    k = rsv.ewm(alpha=1 / 3, adjust=False).mean()
+    d = k.ewm(alpha=1 / 3, adjust=False).mean()
+    out["v_kdj"] = sign((k > d) & (k < 80), (k < d) & (k > 20))
+    r = out["rsi"]
+    out["v_rsi"] = sign((r > 50) & (r < 70), (r < 50) & (r > 30))
+    upper = out["bb_mid"] + 2 * out["bb_sd"]
+    lower = out["bb_mid"] - 2 * out["bb_sd"]
+    out["v_boll"] = sign((c > out["bb_mid"]) & (c < upper), (c < out["bb_mid"]) & (c > lower))
+    big = out["volume"] > 1.2 * out["vol_avg"]
+    out["v_volume"] = sign(big & (c > o), big & (c < o))
+    # candles: engulfing, or a long wick rejecting one side (hammer / shooting star)
+    body = (c - o).abs()
+    po, pc = o.shift(1), c.shift(1)
+    rng = (h - lo).replace(0, np.nan)
+    bull = ((c > o) & (pc < po) & (c >= po) & (o <= pc)) | \
+           ((np.minimum(o, c) - lo >= 2 * body) & ((c - lo) / rng > 0.6))
+    bear = ((c < o) & (pc > po) & (c <= po) & (o >= pc)) | \
+           ((h - np.maximum(o, c) >= 2 * body) & ((h - c) / rng > 0.6))
+    out["v_candle"] = sign(bull & ~bear, bear & ~bull)
+    out["v_breakout"] = sign(c > out["hh"], c < out["ll"])
+    cols = [f"v_{name}" for name in VOTES]
+    out["score"] = out[cols].sum(axis=1)
+    out["prev_score"] = out["score"].shift(1)
     return out
 
 
@@ -86,6 +134,16 @@ def _side(row: pd.Series, cfg: Config) -> tuple[str, float] | None:
     """Which way the closed bar says to trade, and how clean the setup is (0..1)."""
     s = cfg.strategy
     close, a, trend = row["close"], row["atr"], row["trend"]
+    if s.signal_type == "score":
+        # enter on the bar where enough indicators line up, not on every bar they stay lined up
+        n, prev = row["score"], row["prev_score"]
+        if pd.isna(prev):
+            return None
+        if n >= s.min_score > prev:
+            return "long", n / len(VOTES)
+        if n <= -s.min_score < prev:
+            return "short", -n / len(VOTES)
+        return None
     if s.signal_type == "breakout":
         if trend == 1 and close > row["hh"]:
             return "long", (close - row["hh"]) / a
@@ -114,7 +172,7 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
     s, r = cfg.strategy, cfg.risk
     if any(pd.isna(row[c]) for c in ("atr", "hh", "ll", "vol_avg", "trend_ema")):
         return None
-    if row["vol_avg"] <= 0 or (row["trend"] == 0 and s.signal_type != "reversion"):
+    if row["vol_avg"] <= 0 or (row["trend"] == 0 and s.signal_type in ("breakout", "pullback")):
         return None
     vol_ratio = row["volume"] / row["vol_avg"]
     if vol_ratio < s.volume_factor:
@@ -138,8 +196,12 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
         np.clip(trend_dist / 0.01, 0, 1),
         np.clip(breakout, 0, 1),
     ]))
-    return Signal(side, close, stop, tp, a, strength,
-                  f"{side} {s.signal_type} vol x{vol_ratio:.1f} trend {trend_dist:.2%}")
+    reason = f"{side} {s.signal_type} vol x{vol_ratio:.1f} trend {trend_dist:.2%}"
+    if s.signal_type == "score":
+        want = 1 if side == "long" else -1
+        agree = [VOTES[v] for v in VOTES if row[f"v_{v}"] == want]
+        reason = f"{side} 综合 {abs(int(row['score']))}/{len(VOTES)}：{'、'.join(agree)}"
+    return Signal(side, close, stop, tp, a, strength, reason)
 
 
 @dataclass

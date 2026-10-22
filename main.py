@@ -99,24 +99,28 @@ def cmd_compare(_, args):
 SIGNALS = {"breakout": "突破", "pullback": "顺势回踩", "reversion": "超买超卖反转"}
 
 
-TUNE_TIMEFRAMES = (("15 分钟", "15m", "4h"), ("30 分钟", "30m", "4h"), ("1 小时", "1h", "4h"))
+TUNE_TIMEFRAMES = (("5 分钟", "5m", "1h"), ("15 分钟", "15m", "4h"), ("30 分钟", "30m", "4h"),
+                   ("1 小时", "1h", "4h"))
 MIN_TRADES = 20  # fewer trades than this over the whole period proves nothing
-ENTRIES = {"maker": "挂单进场", "market": "市价进场"}
 
 
 def tune_variants():
     """(name, top-level config changes, strategy changes) for every combination the panel compares.
 
-    90 days of BTC/ETH showed only breakouts on 1h bars made money before fees (1m-15m and the
-    other signals lost even before fees), so this round looks for more trades per day by
-    trying 30m and more coins rather than faster bars.
+    The combined score (9 indicators voting) at several timeframes and strictness levels,
+    with limit-order entry (cheaper, it lost less in every earlier comparison), plus the
+    1h breakout that was the only earlier signal to make money before fees, as a yardstick.
     """
     out = []
     for tf_name, tf, trend_tf in TUNE_TIMEFRAMES:
-        for entry, entry_name in ENTRIES.items():
-            top = {"timeframe": tf, "trend_timeframe": trend_tf, "entry_order": entry}
-            out.append((f"{tf_name}·突破·{entry_name}", top, {"signal_type": "breakout",
-                                                              "take_profit_r": [2.0]}))
+        top = {"timeframe": tf, "trend_timeframe": trend_tf, "entry_order": "maker"}
+        for n in (4, 5, 6):
+            out.append((f"{tf_name}·综合打分 {n} 项以上", top,
+                        {"signal_type": "score", "min_score": n, "volume_factor": 0.0,
+                         "take_profit_r": [2.0]}))
+    out.append(("1 小时·只看突破（对照）", {"timeframe": "1h", "trend_timeframe": "4h",
+                                       "entry_order": "maker"},
+                {"signal_type": "breakout", "take_profit_r": [2.0]}))
     return out
 
 
@@ -174,7 +178,7 @@ def cmd_tune(cfg, args):
         for k, v in change.items():
             setattr(c.strategy, k, v)
         frames = {x: resample(base[x], c.timeframe) for x in syms}
-        return run_backtest(c, frames, 1000.0)[1]
+        return run_backtest(c, frames, 100_000.0)[1]
 
     variants = tune_variants()
     rows = []
