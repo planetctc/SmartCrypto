@@ -1133,3 +1133,17 @@ def test_limit_entry_rests_at_best_ask_for_a_short(tmp_path):
     e.step()
     (pe,) = e.pending.values()
     assert pe.price == (px + 1 if pe.side == "short" else px - 1)
+
+
+def test_stop_keeps_min_distance_from_the_real_entry_price(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["XRP/USDT:USDT"], str(tmp_path / "s.json")
+    c.entry_order, c.flow_confirm = "maker", True
+    b = FakeMakerBroker(_df_ending_in_signal(c))
+    px = b.px
+    b.flow = lambda s: {"bid": px * 0.998, "ask": px * 1.002, "bid_qty5": 1, "ask_qty5": 1,
+                        "buy_qty": 5, "sell_qty": 5}
+    e = Engine(c, b)
+    e.step()
+    (pe,) = e.pending.values()
+    assert abs(pe.price - pe.stop) / pe.price >= c.risk.min_stop_pct * 0.999

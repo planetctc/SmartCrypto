@@ -478,6 +478,9 @@ class Engine:
         elif maker:  # rest at the signal close, never on the wrong side of the market
             price = self._round(sym, min(price, sig.entry) if sig.side == "long"
                                 else max(price, sig.entry), sig.side)
+        # entry may sit a tick or two from the signal close (best bid/ask): keep the stop at
+        # least the minimum distance from where we actually enter
+        dist = max(dist, price * self.cfg.risk.min_stop_pct)
         plan = trade_plan(sig.side, price, dist, self.cfg)
         stop = self._round(sym, plan.stop, sig.side)
         tps = [self._round(sym, x, sig.side) for x in plan.take_profits]
