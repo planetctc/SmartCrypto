@@ -65,7 +65,7 @@ def run_command(config_file: str, coins: list[str], margin: float) -> list[str]:
             "--coins", ",".join(coins), "--margin", f"{margin:g}"]
 
 
-def tune_command(config_file: str, coins: list[str], margin: float, days: int = 30) -> list[str]:
+def tune_command(config_file: str, coins: list[str], margin: float, days: int = 90) -> list[str]:
     return [sys.executable, str(ROOT / "main.py"), "tune", "--config", config_file,
             "--coins", ",".join(coins), "--margin", f"{margin:g}", "--days", str(days)]
 

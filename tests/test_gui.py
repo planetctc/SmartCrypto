@@ -60,4 +60,4 @@ def test_settings_roundtrip_and_run_command(tmp_path):
 def test_tune_command():
     cmd = gui.tune_command("config_hf.yaml", ["BTC", "ETH"], 10.0)
     assert cmd[2:] == ["tune", "--config", "config_hf.yaml", "--coins", "BTC,ETH", "--margin", "10",
-                       "--days", "30"]
+                       "--days", "90"]

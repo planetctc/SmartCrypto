@@ -57,6 +57,12 @@ risk:
 
 # ---------------- 策略参数 ----------------
 strategy:
+  signal_type: breakout     # 信号类型：breakout 突破 / pullback 顺势回踩 / reversion 超买超卖反转（用「回测比较」挑）
+  fast_ema: 20              # 顺势回踩：回踩到这条快线再收回去才进场
+  bb_period: 20             # 超买超卖反转：布林带周期
+  bb_std: 2.5               #   价格超出布林带几倍标准差才算太远
+  rsi_period: 14
+  rsi_low: 25               #   RSI 低于 25 算超卖（高于 75 算超买）
   trend_ema: 50            # 15 分钟 EMA50 判断大方向
   breakout_lookback: 15    # 突破最近 15 根 K 线的高点/低点才进场
   volume_lookback: 20

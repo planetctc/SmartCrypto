@@ -25,7 +25,14 @@ class RiskConfig:
 
 @dataclass
 class StrategyConfig:
+    # breakout = 突破前高/前低; pullback = 顺势回踩均线; reversion = 超买超卖反转（布林带 + RSI）
+    signal_type: str = "breakout"
     trend_ema: int = 50
+    fast_ema: int = 20               # pullback: the average price pulls back to
+    bb_period: int = 20              # reversion: Bollinger band length and width
+    bb_std: float = 2.5
+    rsi_period: int = 14
+    rsi_low: float = 25              # reversion: long only below this RSI, short only above 100-x
     breakout_lookback: int = 20
     volume_lookback: int = 20
     volume_factor: float = 1.2
@@ -114,6 +121,8 @@ def validate(cfg: Config) -> None:
     if not 0 < r.min_stop_pct < r.max_stop_pct:
         raise ValueError("need 0 < risk.min_stop_pct < risk.max_stop_pct")
     s = cfg.strategy
+    if s.signal_type not in ("breakout", "pullback", "reversion"):
+        raise ValueError("strategy.signal_type must be breakout, pullback or reversion")
     if not 0 < s.scale_in_frac <= 1 or s.scale_in_at_r < 0:
         raise ValueError("need 0 < strategy.scale_in_frac <= 1 and scale_in_at_r >= 0")
     if not s.take_profit_r or s.take_profit_r != sorted(s.take_profit_r) or s.take_profit_r[0] <= 0:

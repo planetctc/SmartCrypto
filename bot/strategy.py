@@ -42,6 +42,13 @@ def atr(df: pd.DataFrame, n: int) -> pd.Series:
     return tr.ewm(alpha=1 / n, adjust=False).mean()
 
 
+def rsi(close: pd.Series, n: int) -> pd.Series:
+    diff = close.diff()
+    up = diff.clip(lower=0).ewm(alpha=1 / n, adjust=False).mean()
+    down = (-diff.clip(upper=0)).ewm(alpha=1 / n, adjust=False).mean()
+    return 100 - 100 / (1 + up / down.replace(0, np.nan))
+
+
 def prepare(df: pd.DataFrame, df_trend: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     """Add indicator columns to the entry-timeframe frame. Input frames hold CLOSED bars only,
     with columns ts (ms, bar open time), open, high, low, close, volume."""
@@ -51,6 +58,10 @@ def prepare(df: pd.DataFrame, df_trend: pd.DataFrame, cfg: Config) -> pd.DataFra
     out["hh"] = out["high"].rolling(s.breakout_lookback).max().shift(1)
     out["ll"] = out["low"].rolling(s.breakout_lookback).min().shift(1)
     out["vol_avg"] = out["volume"].rolling(s.volume_lookback).mean().shift(1)
+    out["ema_fast"] = ema(out["close"], s.fast_ema)
+    out["bb_mid"] = out["close"].rolling(s.bb_period).mean()
+    out["bb_sd"] = out["close"].rolling(s.bb_period).std()
+    out["rsi"] = rsi(out["close"], s.rsi_period)
     out["close_time"] = out["ts"] + TF_MS[cfg.timeframe]
 
     t = df_trend[["ts", "close"]].copy()
@@ -71,11 +82,39 @@ def prepare(df: pd.DataFrame, df_trend: pd.DataFrame, cfg: Config) -> pd.DataFra
     return out
 
 
+def _side(row: pd.Series, cfg: Config) -> tuple[str, float] | None:
+    """Which way the closed bar says to trade, and how clean the setup is (0..1)."""
+    s = cfg.strategy
+    close, a, trend = row["close"], row["atr"], row["trend"]
+    if s.signal_type == "breakout":
+        if trend == 1 and close > row["hh"]:
+            return "long", (close - row["hh"]) / a
+        if trend == -1 and close < row["ll"]:
+            return "short", (row["ll"] - close) / a
+        return None
+    if s.signal_type == "pullback":
+        # trend up, the bar dipped to the fast average and closed back above it, green
+        if trend == 1 and row["low"] <= row["ema_fast"] < close and close > row["open"]:
+            return "long", (close - row["ema_fast"]) / a
+        if trend == -1 and row["high"] >= row["ema_fast"] > close and close < row["open"]:
+            return "short", (row["ema_fast"] - close) / a
+        return None
+    # reversion: stretched far outside the band with an extreme RSI, not against a clear trend
+    if pd.isna(row["bb_sd"]) or pd.isna(row["rsi"]):
+        return None
+    band = s.bb_std * row["bb_sd"]
+    if trend != -1 and close < row["bb_mid"] - band and row["rsi"] < s.rsi_low:
+        return "long", (row["bb_mid"] - band - close) / a
+    if trend != 1 and close > row["bb_mid"] + band and row["rsi"] > 100 - s.rsi_low:
+        return "short", (close - row["bb_mid"] - band) / a
+    return None
+
+
 def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
     s, r = cfg.strategy, cfg.risk
     if any(pd.isna(row[c]) for c in ("atr", "hh", "ll", "vol_avg", "trend_ema")):
         return None
-    if row["trend"] == 0 or row["vol_avg"] <= 0:
+    if row["vol_avg"] <= 0 or (row["trend"] == 0 and s.signal_type != "reversion"):
         return None
     vol_ratio = row["volume"] / row["vol_avg"]
     if vol_ratio < s.volume_factor:
@@ -83,14 +122,11 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
     trend_dist = abs(row["trend_close"] - row["trend_ema"]) / row["trend_ema"]
     if trend_dist < s.trend_min_gap:
         return None  # trend too weak: price is hugging its average, breakouts there fail more
-
-    close, a = row["close"], row["atr"]
-    if row["trend"] == 1 and close > row["hh"]:
-        side, breakout = "long", (close - row["hh"]) / a
-    elif row["trend"] == -1 and close < row["ll"]:
-        side, breakout = "short", (row["ll"] - close) / a
-    else:
+    picked = _side(row, cfg)
+    if picked is None:
         return None
+    side, breakout = picked
+    close, a = row["close"], row["atr"]
 
     stop_dist = max(a * s.atr_stop_mult, close * r.min_stop_pct)
     sign = 1 if side == "long" else -1
@@ -103,7 +139,7 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
         np.clip(breakout, 0, 1),
     ]))
     return Signal(side, close, stop, tp, a, strength,
-                  f"{side} breakout vol x{vol_ratio:.1f} trend {trend_dist:.2%}")
+                  f"{side} {s.signal_type} vol x{vol_ratio:.1f} trend {trend_dist:.2%}")
 
 
 @dataclass

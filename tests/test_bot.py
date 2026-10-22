@@ -560,3 +560,33 @@ def test_trend_min_gap_filters_weak_trends():
     gap = abs(row["trend_close"] - row["trend_ema"]) / row["trend_ema"]
     c.strategy.trend_min_gap = gap * 1.01
     assert signal_at(row, c) is None
+
+
+@pytest.mark.parametrize("kind", ["pullback", "reversion"])
+def test_new_signal_types_fire_with_stop_on_correct_side(kind):
+    c = cfg()
+    c.strategy.signal_type = kind
+    c.strategy.volume_factor = 0
+    df = synthetic(6000, seed=1)
+    p = prepare(df, resample(df, c.trend_timeframe), c)
+    sigs = [s for s in (signal_at(r, c) for _, r in p.iterrows()) if s]
+    assert sigs
+    for s in sigs:
+        assert kind in s.reason
+        if s.side == "long":
+            assert s.stop < s.entry < s.take_profit
+        else:
+            assert s.take_profit < s.entry < s.stop
+
+
+def test_tune_variants_cover_every_signal_and_config_is_valid():
+    import main
+    from bot.config import validate
+    variants = main.tune_variants()
+    assert len(variants) == 18
+    assert {v[2]["signal_type"] for v in variants} == set(main.SIGNALS)
+    for _, path, change in variants:
+        c = load_config(ROOT / path)
+        for k, v in change.items():
+            setattr(c.strategy, k, v)
+        validate(c)

@@ -96,20 +96,29 @@ def cmd_compare(_, args):
         f"{round(results[p]['trades'] / days[p], 1):>{w}}" for p in results))
 
 
-TUNE_VARIANTS = [  # (name, config file, strategy changes)
-    ("1 分钟信号（高频模式）", "config_hf.yaml", {}),
-    ("1 分钟·突破更严（30 根、量 1.5 倍）", "config_hf.yaml",
-     {"breakout_lookback": 30, "volume_factor": 1.5}),
-    ("1 分钟·更严 + 只做趋势明确", "config_hf.yaml",
-     {"breakout_lookback": 30, "volume_factor": 1.5, "trend_min_gap": 0.003}),
-    ("5 分钟信号（普通模式）", "config.yaml", {}),
-    ("5 分钟·只做趋势明确", "config.yaml", {"trend_min_gap": 0.005}),
-]
+SIGNALS = {"breakout": "突破", "pullback": "顺势回踩", "reversion": "超买超卖反转"}
+
+
+def tune_variants():
+    """(name, config file, strategy changes) for every combination the panel compares."""
+    out = []
+    for tf, path in (("1 分钟", "config_hf.yaml"), ("5 分钟", "config.yaml")):
+        for sig, sig_name in SIGNALS.items():
+            for tp in (1.0, 1.5, 2.0):
+                change = {"signal_type": sig, "take_profit_r": [tp]}
+                if sig != "breakout":
+                    change["volume_factor"] = 0.0  # volume spikes belong to breakouts
+                out.append((f"{tf}·{sig_name}·止盈 {tp:g} 倍", path, change))
+    return out
 
 
 def cmd_tune(cfg, args):
-    """Download recent real 1m candles and backtest a few signal variants side by side.
-    This is what the control panel's 回测比较 button runs."""
+    """Download recent real 1m candles and compare signal types, timeframes and take-profits.
+
+    Choosing the best of many combinations on the same data flatters it, so the ranking uses
+    the first two thirds of the period and the last third is reported separately as the test
+    the winner did not see. This is what the control panel's 回测比较 button runs.
+    """
     from bot.backtest import resample, run_backtest
     from bot.config import load_config
     from bot.data import download, load_csv
@@ -125,31 +134,45 @@ def cmd_tune(cfg, args):
     for i, sym in enumerate(cfg.symbols, 1):
         say(f"下载 {sym.split('/')[0]} 最近 {args.days} 天的 K 线（{i}/{len(cfg.symbols)}）…")
         base[sym] = load_csv(download(sym, "1m", args.days, args.exchange, args.data_dir))
+    t0 = min(f["ts"].iloc[0] for f in base.values())
+    t1 = max(f["ts"].iloc[-1] for f in base.values())
+    cut = t0 + (t1 - t0) * 2 / 3
+    # a large balance keeps a losing variant trading to the end, so every one is measured
+    # on the whole period; results are summed per trade with the per-trade loss cap in place
+    balance = 1000.0
+    variants = tune_variants()
     rows = []
-    for i, (name, path, change) in enumerate(TUNE_VARIANTS, 1):
-        say(f"回测 {i}/{len(TUNE_VARIANTS)}：{name}…")
+    for i, (name, path, change) in enumerate(variants, 1):
+        say(f"回测 {i}/{len(variants)}：{name}…")
         c = load_config(path)
         apply_overrides(c, ",".join(s.split("/")[0] for s in cfg.symbols), cfg.max_margin_usd)
-        c.risk.min_equity_stop_usd = 0  # run the whole period so every variant is compared fully
+        c.risk.min_equity_stop_usd = 0
+        c.capital_usd = 0
         for k, v in change.items():
             setattr(c.strategy, k, v)
         frames = base if c.timeframe == "1m" else {s: resample(f, c.timeframe) for s, f in base.items()}
-        stats, _, _ = run_backtest(c, frames, args.balance)
-        current = Path(path).name == Path(args.config).name and not change
-        rows.append((name + ("（现在用的）" if current else ""), stats))
-    span = max(f["ts"].iloc[-1] - f["ts"].iloc[0] for f in base.values()) / 86_400_000
+        _, trades, _ = run_backtest(c, frames, balance)
+        part = {}
+        for key, sel in (("train", lambda t: t.open_time < cut), ("test", lambda t: t.open_time >= cut)):
+            tr = trades[sel(trades)] if len(trades) else trades
+            part[key] = (float(tr.pnl.sum()) if len(tr) else 0.0, len(tr),
+                         float((tr.pnl > 0).mean() * 100) if len(tr) else 0.0)
+        rows.append((name, part))
+    day = 86_400_000
+    rows.sort(key=lambda r: -r[1]["train"][0])
     coins = "、".join(s.split("/")[0] for s in cfg.symbols)
-    lines = [f"{coins}，最近 {span:.0f} 天真实 K 线，本金 {args.balance:.0f} USDT，"
-             f"每单保证金 {cfg.max_margin_usd:g}",
-             "已扣手续费。回测只是参考，不保证以后一样。", ""]
-    rows.sort(key=lambda r: -r[1]["end_equity"])
-    for rank, (name, st) in enumerate(rows, 1):
-        net, n = st["end_equity"] - args.balance, st["trades"]
-        lines += [f"{rank}. {name}" + ("  ← 最好" if rank == 1 else ""),
-                  f"   净赚 {net:+.2f} USDT（{st['return_pct']:+.1f}%），最大回撤 "
-                  f"{st.get('max_drawdown_pct', 0):.1f}%",
-                  f"   {n} 单，每天 {n / max(span, 1e-9):.1f} 单，胜率 {st.get('win_rate_pct', 0):.0f}%，"
-                  f"平均每单 {net / n if n else 0:+.2f} USDT", ""]
+    lines = [f"{coins}，真实 K 线 {(t1 - t0) / day:.0f} 天，每单保证金 {cfg.max_margin_usd:g}，已扣手续费",
+             f"前 {(cut - t0) / day:.0f} 天用来挑（排名），后 {(t1 - cut) / day:.0f} 天用来验证（挑的时候没看过）。",
+             "两段都赚的才算靠得住。回测只是参考，不保证以后一样。", ""]
+    good = [r for r in rows if r[1]["train"][0] > 0 and r[1]["test"][0] > 0]
+    for rank, (name, part) in enumerate(rows[:8], 1):
+        (a, na, wa), (b, nb, wb) = part["train"], part["test"]
+        mark = "  ✓ 两段都赚" if a > 0 and b > 0 else ""
+        lines += [f"{rank}. {name}{mark}",
+                  f"   挑选段：{a:+.2f} USDT，{na} 单，胜率 {wa:.0f}%",
+                  f"   验证段：{b:+.2f} USDT，{nb} 单，胜率 {wb:.0f}%", ""]
+    lines.append(f"结论：{good[0][0]} 两段都赚，可以拿去模拟盘试。" if good else
+                 f"结论：{len(rows)} 种组合没有一种在两段都赚，这些信号在这段行情里都没有优势。")
     report = "\n".join(lines)
     (out / "tune_report.txt").write_text(report, encoding="utf-8")
     say("完成")
