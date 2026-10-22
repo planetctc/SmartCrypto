@@ -243,7 +243,8 @@ def test_engine_flattens_everything_on_daily_loss(tmp_path):
 # ---------- high-frequency mode ----------
 def test_hf_config_loads():
     c = load_config(ROOT / "config_hf.yaml")
-    assert c.timeframe == "1m" and c.entry_order == "market" and len(c.symbols) == 5
+    assert (c.timeframe, c.trend_timeframe, c.entry_order, c.tp_order) == ("15m", "4h", "maker", "maker")
+    assert c.maker_timeout_seconds * 1000 == TF_MS["15m"] and c.strategy.take_profit_r == [1.0]
     assert c.risk.max_trades_per_day == 40 and c.risk.daily_max_loss_pct == 0.30
     assert (c.leverage, c.min_margin_usd, c.max_margin_usd) == (100, 5, 15)
 
@@ -273,7 +274,8 @@ def test_maker_sizing_cheaper_than_market():
 
 def test_backtest_maker_mode_fees_and_bounds():
     c = load_config(ROOT / "config_hf.yaml")
-    c.symbols, c.entry_order = c.symbols[:2], "maker"
+    c.symbols, c.entry_order, c.tp_order = c.symbols[:2], "maker", "market"
+    c.timeframe, c.trend_timeframe = "1m", "15m"
     frames = {s: synthetic(8000, seed=7 + i, start_price=[60_000, 3_000][i], step_ms=60_000)
               for i, s in enumerate(c.symbols)}
     stats, trades, _ = run_backtest(c, frames, 100)
