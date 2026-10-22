@@ -203,6 +203,9 @@ def _friendly(line: str) -> str:
         return f"{t}  {coin(r[1])} 计划：{add}分批止盈 {r[4].replace('/', ' / ')}"
     if r := re.match(r"(\S+) new signal on (\S+): closing", msg):
         return f"{t}  {coin(r[2])} 出新信号，{coin(r[1])} 还没保本，平掉换新单"
+    if r := re.match(r"SCAN (\d+) coins up=(\d+) down=(\d+) flat=(\d+) signals=(\d+)", msg):
+        found = f"{r[5]} 个信号" if r[5] != "0" else "没有信号"
+        return (f"{t}  扫描 {r[1]} 个币：大方向向上 {r[2]}、向下 {r[3]}、不明 {r[4]}，{found}")
     if r := re.match(r"TP-LIMIT (\S+) \S+ qty=\S+ @ (\S+)", msg):
         return f"{t}  {coin(r[1])} 止盈挂单已挂好 @ {r[2]}"
     if r := re.match(r"(\S+) limit take-profit not placed .* close at (\S+) itself", msg):

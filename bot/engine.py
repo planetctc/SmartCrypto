@@ -127,10 +127,18 @@ class Engine:
             self._save_state()
             return
 
+        scans = []
         for sym in self.cfg.symbols:
-            self._refresh_bars(sym, now, positions)
+            scans.append(self._refresh_bars(sym, now, positions))
             if sym in positions:
                 self._manage(sym, positions[sym], now)
+        scans = [x for x in scans if x]
+        if scans:
+            # one line per closed bar so the log shows the bot is looking, even with no trade
+            trends = [t for t, _ in scans]
+            log.info("SCAN %d coins up=%d down=%d flat=%d signals=%d", len(scans),
+                     trends.count(1), trends.count(-1), trends.count(0),
+                     sum(1 for _, sig in scans if sig))
         self._save_state()
 
     def _balance(self) -> tuple[float, float]:
@@ -257,24 +265,28 @@ class Engine:
         stopped = pnl < 0 and why not in ("max hold time", "replaced by new signal")
         self.risk.record_close(now, sym, pnl, stopped, self.tf_ms)
 
-    def _refresh_bars(self, sym: str, now: int, positions: dict[str, Position]) -> None:
+    def _refresh_bars(self, sym: str, now: int,
+                      positions: dict[str, Position]) -> tuple[int, bool] | None:
+        """On a newly closed bar: (trend -1/0/1, signal found); None if nothing new."""
         cur_bar = (now // self.tf_ms) * self.tf_ms - self.tf_ms  # last fully closed bar
         if self.last_bar.get(sym) == cur_bar:
-            return
+            return None
         df = self.broker.ohlcv(sym, self.cfg.timeframe, HISTORY_BARS)
         trend_bars = self.cfg.strategy.trend_ema * 3 + 10
         dft = self.broker.ohlcv(sym, self.cfg.trend_timeframe, trend_bars)
         if df.empty or dft.empty:
-            return
+            return None
         prepared = prepare(df, dft, self.cfg)
         row = prepared.iloc[-1]
         self.last_bar[sym] = int(row["ts"])
         self.atr[sym] = float(row["atr"])
+        trend = int(row["trend"])
         if sym in positions or sym in self.pending:
-            return
+            return trend, False
         sig = signal_at(row, self.cfg)
         if sig:
             self._try_open(sym, sig, now, positions)
+        return trend, sig is not None
 
     def _make_room(self, sym: str, now: int, positions: dict[str, Position], equity: float) -> int:
         """replace_on_new_signal: free slots for a new signal on `sym` by cancelling other
