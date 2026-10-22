@@ -28,6 +28,7 @@ class Signal:
     atr: float
     strength: float    # 0..1, maps to margin between min and max
     reason: str
+    votes: tuple = ()  # score signal: the indicators that agreed with the side
 
 
 def ema(s: pd.Series, n: int) -> pd.Series:
@@ -199,8 +200,9 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
     reason = f"{side} {s.signal_type} vol x{vol_ratio:.1f} trend {trend_dist:.2%}"
     if s.signal_type == "score":
         want = 1 if side == "long" else -1
-        agree = [VOTES[v] for v in VOTES if row[f"v_{v}"] == want]
-        reason = f"{side} 综合 {abs(int(row['score']))}/{len(VOTES)}：{'、'.join(agree)}"
+        agree = tuple(v for v in VOTES if row[f"v_{v}"] == want)
+        reason = f"{side} 综合 {abs(int(row['score']))}/{len(VOTES)}：{'、'.join(VOTES[v] for v in agree)}"
+        return Signal(side, close, stop, tp, a, strength, reason, agree)
     return Signal(side, close, stop, tp, a, strength, reason)
 
 

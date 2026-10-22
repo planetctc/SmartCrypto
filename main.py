@@ -99,29 +99,45 @@ def cmd_compare(_, args):
 SIGNALS = {"breakout": "突破", "pullback": "顺势回踩", "reversion": "超买超卖反转"}
 
 
-TUNE_TIMEFRAMES = (("5 分钟", "5m", "1h"), ("15 分钟", "15m", "4h"), ("30 分钟", "30m", "4h"),
-                   ("1 小时", "1h", "4h"))
 MIN_TRADES = 20  # fewer trades than this over the whole period proves nothing
+SCALP_TIMEFRAMES = (("5 分钟", "5m", "1h"), ("15 分钟", "15m", "4h"))
 
 
 def tune_variants():
-    """(name, top-level config changes, strategy changes) for every combination the panel compares.
+    """(name, top-level config changes, strategy changes, show indicators) for every
+    combination the panel compares.
 
-    The combined score (9 indicators voting) at several timeframes and strictness levels,
-    with limit-order entry (cheaper, it lost less in every earlier comparison), plus the
-    1h breakout that was the only earlier signal to make money before fees, as a yardstick.
+    Fast in-and-out (快打快出): breakout and the 9-indicator score on 5m/15m with small
+    take-profits (0.5R and 1R of a 0.3%+ stop), all with limit-order entry. The 1h breakout,
+    the only signal so far to make money in both parts, stays in as the yardstick.
     """
     out = []
-    for tf_name, tf, trend_tf in TUNE_TIMEFRAMES:
+    for tf_name, tf, trend_tf in SCALP_TIMEFRAMES:
         top = {"timeframe": tf, "trend_timeframe": trend_tf, "entry_order": "maker"}
-        for n in (4, 5, 6):
-            out.append((f"{tf_name}·综合打分 {n} 项以上", top,
-                        {"signal_type": "score", "min_score": n, "volume_factor": 0.0,
-                         "take_profit_r": [2.0]}))
-    out.append(("1 小时·只看突破（对照）", {"timeframe": "1h", "trend_timeframe": "4h",
-                                       "entry_order": "maker"},
-                {"signal_type": "breakout", "take_profit_r": [2.0]}))
+        for tp in (0.5, 1.0):
+            out.append((f"{tf_name}·突破·止盈 {tp:g} 倍", top,
+                        {"signal_type": "breakout", "take_profit_r": [tp]}, False))
+            out.append((f"{tf_name}·综合打分 4 项以上·止盈 {tp:g} 倍", top,
+                        {"signal_type": "score", "min_score": 4, "volume_factor": 0.0,
+                         "take_profit_r": [tp]}, True))
+    out.append(("1 小时·突破·止盈 2 倍（对照）",
+                {"timeframe": "1h", "trend_timeframe": "4h", "entry_order": "maker"},
+                {"signal_type": "breakout", "take_profit_r": [2.0]}, False))
     return out
+
+
+def indicator_lines(trades, cut):
+    """For the score signal: how trades did when each indicator agreed, in both parts."""
+    from bot.config import VOTES
+    avg = lambda t: t.pnl.mean() if len(t) else 0.0  # noqa: E731
+    first, last = trades[trades.open_time < cut], trades[trades.open_time >= cut]
+    lines = ["   每个指标同意时，平均每单赚多少（已扣手续费；比全部单平均好的指标才有用）：",
+             f"     全部单：挑选段 {avg(first):+.3f}，验证段 {avg(last):+.3f}"]
+    for key, name in VOTES.items():
+        has = trades.votes.str.split(",").apply(lambda v, k=key: k in v)
+        tr, te = trades[has & (trades.open_time < cut)], trades[has & (trades.open_time >= cut)]
+        lines.append(f"     {name}：挑选段 {avg(tr):+.3f}（{len(tr)} 单），验证段 {avg(te):+.3f}（{len(te)} 单）")
+    return lines
 
 
 def _halves(trades, cut):
@@ -182,16 +198,20 @@ def cmd_tune(cfg, args):
 
     variants = tune_variants()
     rows = []
-    for i, (name, top, change) in enumerate(variants, 1):
+    for i, (name, top, change, show) in enumerate(variants, 1):
         say(f"回测 {i}/{len(variants)}：{name}…")
         trades = backtest(top, change, cfg.symbols)
+        extra = indicator_lines(trades, cut) if show and len(trades) else []
         # keep only the coins that made money in the first part, then rerun with just those
         # (one position at a time means the coins compete for the slot)
         keep = [x for x in cfg.symbols if len(trades) and
                 trades[(trades.symbol == x) & (trades.open_time < cut)].pnl.sum() > 0]
-        picked = _halves(backtest(top, change, keep), cut) if keep else None
-        rows.append((name, _halves(trades, cut), keep, picked))
-    score = lambda r: r[3]["train"][0] if r[3] else r[1]["train"][0]  # noqa: E731
+        if keep == cfg.symbols:
+            picked = None  # every coin made money: the all-coin line already says it
+        else:
+            picked = _halves(backtest(top, change, keep), cut) if keep else None
+        rows.append((name, _halves(trades, cut), keep, picked, extra))
+    score = lambda r: max(r[1]["train"][0], r[3]["train"][0] if r[3] else -1e9)  # noqa: E731
     rows.sort(key=lambda r: -score(r))
 
     def describe(label, part):
@@ -204,9 +224,15 @@ def cmd_tune(cfg, args):
              f"前 {(cut - t0) / day:.0f} 天用来挑（排名、挑币），后 {(t1 - cut) / day:.0f} 天用来验证（挑的时候没看过）。",
              "两段都赚的才算靠得住。回测只是参考，不保证以后一样。", ""]
     good = []
-    for rank, (name, every, keep, picked) in enumerate(rows, 1):
+    def passes(part):
+        n = part["train"][1] + part["test"][1]
+        return part["train"][0] > 0 and part["test"][0] > 0 and n >= MIN_TRADES
+
+    for rank, (name, every, keep, picked, extra) in enumerate(rows, 1):
         lines.append(f"{rank}. {name}")
-        lines += describe("全部币", every)
+        if passes(every):
+            good.append((name, cfg.symbols, every))
+        lines += describe("全部币" + ("  ✓ 两段都赚" if passes(every) else ""), every)
         if picked:
             n = picked["train"][1] + picked["test"][1]
             ok = picked["train"][0] > 0 and picked["test"][0] > 0 and n >= MIN_TRADES
@@ -214,13 +240,15 @@ def cmd_tune(cfg, args):
                 good.append((name, keep, picked))
             note = "  ✓ 两段都赚" if ok else ("  （单数太少，不算数）" if n < MIN_TRADES else "")
             lines += describe(f"只做 {short(keep)}" + note, picked)
-        else:
+        elif not keep:
             lines.append("   前段没有一个币赚钱")
+        lines += extra
         lines.append("")
     if good:
-        name, keep, picked = good[0]
-        n = picked["train"][1] + picked["test"][1]
-        lines.append(f"结论：{name}，只做 {short(keep)}，两段都赚，约 {n / days:.1f} 单/天，可以拿去模拟盘试。")
+        lines.append("结论：两段都赚的：")
+        for name, keep, part in good:
+            n = part["train"][1] + part["test"][1]
+            lines.append(f"  {name}，币：{short(keep)}，约 {n / days:.1f} 单/天")
     else:
         lines.append("结论：没有一种在两段都赚。")
     report = "\n".join(lines)

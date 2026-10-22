@@ -51,6 +51,7 @@ class BtPos:
     tp_qtys: list = field(default_factory=list)
     realized: float = 0.0      # partial-close profit, fees included (already in cash)
     planned_margin: float = 0.0  # margin of both batches together, as sized
+    votes: str = ""              # score signal: indicators that agreed, comma separated
 
 
 def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: float = 100.0):
@@ -88,7 +89,7 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
                        "entry": p.entry, "exit": fill, "qty": p.qty, "margin": p.planned_margin,
                        "pnl": pnl - p.entry_fee,  # include the opening fee
                        "fees": p.entry_fee + (0.0 if why == "liquidated" else fee * fill * p.qty),
-                       "reason": why, "bars": i - p.opened_i, "adds": p.adds})
+                       "reason": why, "bars": i - p.opened_i, "adds": p.adds, "votes": p.votes})
 
     def scale(p, sym, row, i):
         """补仓 / 平加仓 / 分批止盈 inside one bar, same rules as live. Adverse moves are
@@ -187,7 +188,7 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
                              sizing.qty - qty if scales_in(cfg) else 0.0,
                              tps=plan.take_profits[:-1],
                              tp_qtys=[qty * f for f in st.take_profit_split],
-                             planned_margin=sizing.margin)
+                             planned_margin=sizing.margin, votes=",".join(sig.votes))
 
         # 2) manage open positions against this bar's range
         for sym in list(pos):
