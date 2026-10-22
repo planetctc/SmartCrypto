@@ -188,6 +188,10 @@ def _friendly(line: str) -> str:
     if r := re.match(r"PLAN (\S+) add=(\S+) @ (\S+) take-profits=(\S+)", msg):
         add = f"到 {r[3]} 补仓，" if float(r[2]) > 0 else ""
         return f"{t}  {coin(r[1])} 计划：{add}分批止盈 {r[4].replace('/', ' / ')}"
+    if r := re.match(r"TP-LIMIT (\S+) \S+ qty=\S+ @ (\S+)", msg):
+        return f"{t}  {coin(r[1])} 止盈挂单已挂好 @ {r[2]}"
+    if r := re.match(r"(\S+) limit take-profit not placed .* close at (\S+) itself", msg):
+        return f"{t}  {coin(r[1])} 止盈挂单没挂上，到 {r[2]} 机器人自己平仓"
     if r := re.match(r"FILLED (\S+) (long|short) qty=\S+ @ (\S+)", msg):
         return f"{t}  {coin(r[1])} 挂单成交，开仓{side(r[2])} @ {r[3]}"
     if r := re.match(r"(\S+) maker entry \S+ (not filled|cancelled)", msg):
@@ -435,7 +439,7 @@ class Panel(tk.Tk):
         for line in lines:
             tag = "muted"
             if any(k in line for k in (" OPEN ", " FILLED ", " MAKER ", " ADD ", " PLAN ",
-                                        " REDUCE ", " PARTIAL ")):
+                                        " REDUCE ", " PARTIAL ", " TP-LIMIT ")):
                 tag = "info"
             pm = PNL_RE.search(line)
             if pm:

@@ -36,7 +36,7 @@ max_open_positions: 1  # 同时只开一单
 #   maker  = 挂单（只做 maker），手续费 0.02%，但价格跑掉就不成交
 entry_order: maker   # 挂单：回测里 1 小时突破挂单比市价少亏很多（手续费低）
 maker_timeout_seconds: 3600   # 挂单 1 小时（一根 K 线）没成交就撤单，和回测一样
-tp_order: market   # 止盈方式：market = 交易所止盈单（触发后市价）；maker = 挂限价单止盈（手续费低，目前只在回测里用）
+tp_order: maker    # 止盈方式：maker = 开仓后挂只减仓的限价单止盈（手续费低、没有滑点，回测里明显更好）；market = 交易所止盈单（触发后市价）
 
 # ---------------- 风控（减少亏损的关键） ----------------
 risk:

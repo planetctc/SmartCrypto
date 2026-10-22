@@ -37,6 +37,8 @@ class Trade:
     tps: list = field(default_factory=list)      # 分批止盈 levels still to hit (exchange has the last)
     tp_qtys: list = field(default_factory=list)  # qty to close at each of those levels
     realized: float = 0.0     # profit already taken from partial closes
+    tp_order_id: str = ""     # tp_order maker: id of the resting limit take-profit
+    tp_tries: int = 0         # failed attempts to place it (bot watches the price after 3)
 
 
 @dataclass
@@ -56,6 +58,7 @@ class Engine:
         self.cfg = cfg
         self.broker = broker
         self.tf_ms = TF_MS[cfg.timeframe]
+        self.limit_tp = cfg.tp_order == "maker"
         self.state_path = Path(cfg.state_file)
         self.trades: dict[str, Trade] = {}
         self.pending: dict[str, PendingEntry] = {}
@@ -189,6 +192,26 @@ class Engine:
         log.info("FILLED %s %s qty=%s @ %.10g stop=%.10g tp=%.10g",
                  sym, pe.side, pos.qty, pos.entry, pe.stop, pe.take_profit)
         self._liq_safety(sym, pos, pe.stop, now)
+        if sym in self.trades:
+            self._place_tp(sym, self.trades[sym])
+
+    def _place_tp(self, sym: str, t: Trade) -> None:
+        """tp_order maker: rest a reduce-only limit at the take-profit (maker fee). If the
+        exchange refuses it, the bot itself closes at market when price reaches the level."""
+        if not self.limit_tp or t.tp_order_id or t.tp_tries >= 3:
+            return
+        try:
+            t.tp_order_id = self.broker.place_tp(sym, t.side, t.qty, t.take_profit)
+            log.info("TP-LIMIT %s %s qty=%s @ %.10g", sym, t.side, t.qty, t.take_profit)
+        except Exception as e:  # noqa: BLE001 - any refusal falls back to watching the price
+            t.tp_tries += 1
+            log.warning("%s limit take-profit not placed (%s); bot will close at %.10g itself",
+                        sym, e, t.take_profit)
+
+    def _cancel_tp(self, sym: str, t: Trade | None) -> None:
+        if t is not None and t.tp_order_id:
+            self.broker.cancel_order(sym, t.tp_order_id)
+            t.tp_order_id = ""
 
     def _liq_safety(self, sym: str, pos: Position, stop: float, now: int) -> None:
         """If the exchange's real liquidation price sits inside our stop, get out now."""
@@ -210,6 +233,7 @@ class Engine:
         """A tracked trade with no exchange position was closed by the exchange stop/TP."""
         for sym in [s for s in self.trades if s not in positions]:
             t = self.trades.pop(sym)
+            self._cancel_tp(sym, t)  # stop hit: the limit take-profit must not stay behind
             px = self.broker.price(sym)
             sign = 1 if t.side == "long" else -1
             avg = t.avg_entry or t.entry
@@ -223,6 +247,7 @@ class Engine:
             self._close(sym, p, now, "risk stop")
 
     def _close(self, sym: str, p: Position, now: int, why: str) -> None:
+        self._cancel_tp(sym, self.trades.get(sym))
         fill = self.broker.close(sym, p)
         sign = 1 if p.side == "long" else -1
         fees = 2 * self.cfg.fees.taker * p.entry * p.qty
@@ -290,8 +315,9 @@ class Engine:
                  "tp_qtys": [self.broker.round_qty(sym, qty * f) for f in s.take_profit_split]}
         margin = sizing.margin * qty / sizing.qty
 
+        exch_tp = 0.0 if self.limit_tp else tp  # 0 = no trigger TP, a limit order goes in after
         if maker:
-            oid = self.broker.open_maker(sym, sig.side, qty, price, stop, tp)
+            oid = self.broker.open_maker(sym, sig.side, qty, price, stop, exch_tp)
             self.pending[sym] = PendingEntry(oid, sig.side, qty, price, stop, tp,
                                              now + self.cfg.maker_timeout_seconds * 1000, extra)
             log.info("MAKER %s %s qty=%s @ %.10g stop=%.10g tp=%.10g margin≈%.2f strength=%.2f (%s)",
@@ -299,7 +325,7 @@ class Engine:
             self._log_plan(sym, extra, tps)
             return
 
-        fill = self.broker.open(sym, sig.side, qty, stop, tp)
+        fill = self.broker.open(sym, sig.side, qty, stop, exch_tp)
         self.risk.record_open()
         log.info("OPEN %s %s qty=%s @ %.10g stop=%.10g tp=%.10g margin≈%.2f strength=%.2f (%s)",
                  sym, sig.side, qty, fill, stop, tp, margin, sig.strength, sig.reason)
@@ -308,6 +334,8 @@ class Engine:
         pos = self.broker.positions().get(sym)
         if pos:
             self._liq_safety(sym, pos, stop, now)
+        if sym in self.trades:
+            self._place_tp(sym, self.trades[sym])
 
     def _log_plan(self, sym: str, extra: dict, tps: list[float]) -> None:
         log.info("PLAN %s add=%s @ %.10g take-profits=%s", sym, extra["add_plan"],
@@ -329,6 +357,12 @@ class Engine:
             self.trades[sym] = t
             log.warning("%s adopted unknown position, managed stop %.10g", sym, stop)
         price = self.broker.price(sym)
+        if self.limit_tp and t.take_profit != t.entry:
+            sign = 1 if t.side == "long" else -1
+            if not t.tp_order_id and sign * (price - t.take_profit) >= 0:
+                self._close(sym, p, now, "take-profit")  # limit refused: take it at market
+                return
+            self._place_tp(sym, t)
         t.best = max(t.best, price) if t.side == "long" else min(t.best, price)
         bars = (now - t.opened_ms) // self.tf_ms
         d = manage_position(t.side, t.entry, t.stop, t.initial_stop, price, t.best,

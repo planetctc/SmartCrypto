@@ -207,15 +207,27 @@ class BitgetBroker:
         min_amt = (self.ex.market(symbol)["limits"]["amount"]["min"] or 0)
         return q if q >= min_amt else 0.0
 
+    def _protect(self, symbol: str, stop: float, tp: float) -> dict:
+        """Order params with the stop-loss (and, when tp > 0, the take-profit trigger)
+        attached on the exchange. tp = 0 when the take-profit is a separate limit order."""
+        params = {"marginMode": self.order_margin_mode, "hedged": False,
+                  "stopLoss": {"triggerPrice": float(self.ex.price_to_precision(symbol, stop))}}
+        if tp > 0:
+            params["takeProfit"] = {"triggerPrice": float(self.ex.price_to_precision(symbol, tp))}
+        return params
+
+    def place_tp(self, symbol: str, side: str, qty: float, price: float) -> str:
+        """Take-profit as a resting reduce-only post-only limit order (maker fee, exact price)."""
+        order = self.ex.create_order(symbol, "limit", "sell" if side == "long" else "buy", qty,
+                                     float(self.ex.price_to_precision(symbol, price)),
+                                     {"marginMode": self.order_margin_mode, "hedged": False,
+                                      "reduceOnly": True, "postOnly": True})
+        return str(order["id"])
+
     def open(self, symbol: str, side: str, qty: float, stop: float, tp: float) -> float:
         """Market entry with stop-loss and take-profit attached on the exchange, so they
         still fire if this program crashes or loses connection."""
-        params = {
-            "marginMode": self.order_margin_mode,
-            "hedged": False,
-            "stopLoss": {"triggerPrice": float(self.ex.price_to_precision(symbol, stop))},
-            "takeProfit": {"triggerPrice": float(self.ex.price_to_precision(symbol, tp))},
-        }
+        params = self._protect(symbol, stop, tp)
         order = self.ex.create_order(symbol, "market", "buy" if side == "long" else "sell",
                                      qty, None, params)
         fill = order.get("average") or order.get("price")
@@ -229,13 +241,7 @@ class BitgetBroker:
         """Post-only limit entry (maker fee). Bitget rejects it instead of filling as taker
         if the price has already moved through. Stop-loss / take-profit are attached the same
         way as market entries."""
-        params = {
-            "marginMode": self.order_margin_mode,
-            "hedged": False,
-            "postOnly": True,
-            "stopLoss": {"triggerPrice": float(self.ex.price_to_precision(symbol, stop))},
-            "takeProfit": {"triggerPrice": float(self.ex.price_to_precision(symbol, tp))},
-        }
+        params = {**self._protect(symbol, stop, tp), "postOnly": True}
         order = self.ex.create_order(symbol, "limit", "buy" if side == "long" else "sell",
                                      qty, float(self.ex.price_to_precision(symbol, price)), params)
         return str(order["id"])
@@ -287,6 +293,7 @@ class PaperBroker:
         self.orders: dict[str, tuple[float, float]] = {}  # symbol -> (stop, tp)
         self.closed_by_exchange: list[tuple[str, float, str]] = []
         self.limits: dict[str, dict] = {}  # order id -> simulated resting maker order
+        self.limit_tps: dict[str, str] = {}  # symbol -> id of its resting limit take-profit
         self._next_id = 1
 
     def setup_symbol(self, symbol: str) -> None:
@@ -332,15 +339,19 @@ class PaperBroker:
                 self.closed_by_exchange.append((sym, -p.margin, "liquidated"))
             elif sign * (px - stop) <= 0:
                 self.closed_by_exchange.append((sym, self._settle(sym, stop), "stop-loss"))
-            elif sign * (px - tp) >= 0:
+            elif tp and sign * (px - tp) > 0 and sym in self.limit_tps:
+                self.closed_by_exchange.append((sym, self._settle(sym, tp, maker=True), "take-profit"))
+            elif tp and sign * (px - tp) >= 0 and sym not in self.limit_tps:
                 self.closed_by_exchange.append((sym, self._settle(sym, tp), "take-profit"))
 
-    def _settle(self, sym, px) -> float:
+    def _settle(self, sym, px, maker: bool = False) -> float:
         p = self.pos.pop(sym)
         self.orders.pop(sym)
-        fill = self._slip(px, p.side, opening=False)
+        self.limit_tps.pop(sym, None)
+        fill = px if maker else self._slip(px, p.side, opening=False)
         sign = 1 if p.side == "long" else -1
-        pnl = sign * (fill - p.entry) * p.qty - self._fee(fill * p.qty)
+        fee = fill * p.qty * self.cfg.fees.maker if maker else self._fee(fill * p.qty)
+        pnl = sign * (fill - p.entry) * p.qty - fee
         self.cash += pnl
         return pnl
 
@@ -384,11 +395,25 @@ class PaperBroker:
                             "stop": stop, "tp": tp, "status": "open"}
         return oid
 
+    def place_tp(self, symbol, side, qty, price):
+        oid = f"paper-tp-{self._next_id}"
+        self._next_id += 1
+        self.orders[symbol] = (self.orders[symbol][0], price)
+        self.limit_tps[symbol] = oid
+        return oid
+
     def order_status(self, symbol, order_id):
         o = self.limits[order_id]
         return o["status"], (o["qty"] if o["status"] == "closed" else 0.0), o["price"]
 
     def cancel_order(self, symbol, order_id):
+        if self.limit_tps.get(symbol) == order_id:
+            del self.limit_tps[symbol]
+            if symbol in self.orders:
+                self.orders[symbol] = (self.orders[symbol][0], 0.0)
+            return
+        if order_id not in self.limits:
+            return
         if self.limits[order_id]["status"] == "open":
             self.limits[order_id]["status"] = "canceled"
 

@@ -22,7 +22,7 @@ def cfg() -> Config:
     """config.yaml with the 5m/1h market-entry timing these mechanics tests were built on."""
     c = load_config(ROOT / "config.yaml")
     c.timeframe, c.trend_timeframe = "5m", "1h"
-    c.entry_order, c.maker_timeout_seconds = "market", 60
+    c.entry_order, c.maker_timeout_seconds, c.tp_order = "market", 60, "market"
     return c
 
 
@@ -619,7 +619,7 @@ def test_candle_download_retries_after_too_many_requests(monkeypatch):
 
 def test_normal_mode_is_1h_breakout_with_limit_entry_waiting_one_bar():
     c = load_config(ROOT / "config.yaml")
-    assert (c.timeframe, c.trend_timeframe, c.entry_order) == ("1h", "4h", "maker")
+    assert (c.timeframe, c.trend_timeframe, c.entry_order, c.tp_order) == ("1h", "4h", "maker", "maker")
     assert c.strategy.signal_type == "breakout"
     assert c.maker_timeout_seconds * 1000 == TF_MS["1h"]
 
@@ -689,3 +689,60 @@ def test_minute_exits_remove_same_bar_pessimism_for_small_take_profits():
     assert len(fine) > 50
     assert (fine.pnl > 0).mean() > (coarse.pnl > 0).mean()
     assert fine.pnl.min() >= -c.risk.max_loss_per_trade_usd - 1e-6
+
+
+class FakeTpBroker(FakeMakerBroker):
+    def __init__(self, df, refuse=False):
+        super().__init__(df)
+        self.tps, self.cancelled, self.refuse = [], [], refuse
+
+    def place_tp(self, s, side, qty, price):
+        if self.refuse:
+            raise RuntimeError("post only would take")
+        self.tps.append((s, side, qty, price))
+        return f"tp{len(self.tps)}"
+
+    def cancel_order(self, s, oid):
+        self.cancelled.append(oid)
+        if oid in self.limits:
+            super().cancel_order(s, oid)
+
+
+def _limit_tp_engine(tmp_path, refuse=False):
+    c = cfg()
+    c.symbols, c.state_file, c.tp_order = ["BTC/USDT:USDT"], str(tmp_path / "s.json"), "maker"
+    b = FakeTpBroker(_df_ending_in_signal(c), refuse)
+    return c, b, Engine(c, b)
+
+
+def test_limit_take_profit_rests_after_entry_and_is_cancelled_when_stopped(tmp_path):
+    c, b, e = _limit_tp_engine(tmp_path)
+    e.step()
+    (s, side, qty, stop, tp), = b.opened
+    assert tp == 0  # no trigger take-profit on the exchange
+    t = e.trades[s]
+    assert b.tps == [(s, side, qty, t.take_profit)] and t.tp_order_id == "tp1"
+    b.pos.clear()  # exchange stop closed the position
+    e.step()
+    assert "tp1" in b.cancelled and s not in e.trades
+
+
+def test_limit_take_profit_refused_bot_closes_at_market(tmp_path):
+    c, b, e = _limit_tp_engine(tmp_path, refuse=True)
+    e.step()
+    (s, side, *_), = b.opened
+    t = e.trades[s]
+    assert t.tp_order_id == "" and t.tp_tries == 1
+    b.px = t.take_profit + (1 if side == "long" else -1)
+    e.step()
+    assert s in b.closed
+
+
+def test_limit_take_profit_needs_single_entry_and_target():
+    from bot.config import validate
+    c = cfg()
+    c.tp_order = "maker"
+    validate(c)
+    c.strategy.take_profit_r, c.strategy.take_profit_split = [1.0, 2.0], [0.5]
+    with pytest.raises(ValueError):
+        validate(c)
