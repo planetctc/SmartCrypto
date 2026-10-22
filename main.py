@@ -96,21 +96,22 @@ def cmd_compare(_, args):
         f"{round(results[p]['trades'] / days[p], 1):>{w}}" for p in results))
 
 
-TUNE_VARIANTS = [
-    ("现在的设置", {}),
-    ("关掉补仓", {"scale_in_at_r": 0}),
-    ("补仓拉远到 0.8 倍", {"scale_in_at_r": 0.8}),
-    ("一次开满，不分批", {"scale_in_frac": 1.0}),
-    ("关掉补仓 + 持仓不限时", {"scale_in_at_r": 0, "max_hold_bars": 10**9}),
+TUNE_VARIANTS = [  # (name, config file, strategy changes)
+    ("1 分钟信号（高频模式）", "config_hf.yaml", {}),
+    ("1 分钟·突破更严（30 根、量 1.5 倍）", "config_hf.yaml",
+     {"breakout_lookback": 30, "volume_factor": 1.5}),
+    ("1 分钟·更严 + 只做趋势明确", "config_hf.yaml",
+     {"breakout_lookback": 30, "volume_factor": 1.5, "trend_min_gap": 0.003}),
+    ("5 分钟信号（普通模式）", "config.yaml", {}),
+    ("5 分钟·只做趋势明确", "config.yaml", {"trend_min_gap": 0.005}),
 ]
 
 
 def cmd_tune(cfg, args):
-    """Download recent real candles and backtest a few strategy variants side by side.
+    """Download recent real 1m candles and backtest a few signal variants side by side.
     This is what the control panel's 回测比较 button runs."""
-    import copy
-
-    from bot.backtest import run_backtest
+    from bot.backtest import resample, run_backtest
+    from bot.config import load_config
     from bot.data import download, load_csv
     out = Path(args.data_dir)
     out.mkdir(exist_ok=True)
@@ -120,23 +121,26 @@ def cmd_tune(cfg, args):
         print(msg)
         progress.write_text(msg, encoding="utf-8")
 
-    frames = {}
+    base = {}
     for i, sym in enumerate(cfg.symbols, 1):
         say(f"下载 {sym.split('/')[0]} 最近 {args.days} 天的 K 线（{i}/{len(cfg.symbols)}）…")
-        frames[sym] = load_csv(download(sym, cfg.timeframe, args.days, args.exchange, args.data_dir))
+        base[sym] = load_csv(download(sym, "1m", args.days, args.exchange, args.data_dir))
     rows = []
-    for i, (name, change) in enumerate(TUNE_VARIANTS, 1):
+    for i, (name, path, change) in enumerate(TUNE_VARIANTS, 1):
         say(f"回测 {i}/{len(TUNE_VARIANTS)}：{name}…")
-        c = copy.deepcopy(cfg)
+        c = load_config(path)
+        apply_overrides(c, ",".join(s.split("/")[0] for s in cfg.symbols), cfg.max_margin_usd)
         c.risk.min_equity_stop_usd = 0  # run the whole period so every variant is compared fully
         for k, v in change.items():
             setattr(c.strategy, k, v)
+        frames = base if c.timeframe == "1m" else {s: resample(f, c.timeframe) for s, f in base.items()}
         stats, _, _ = run_backtest(c, frames, args.balance)
-        rows.append((name, stats))
-    span = max(f["ts"].iloc[-1] - f["ts"].iloc[0] for f in frames.values()) / 86_400_000
+        current = Path(path).name == Path(args.config).name and not change
+        rows.append((name + ("（现在用的）" if current else ""), stats))
+    span = max(f["ts"].iloc[-1] - f["ts"].iloc[0] for f in base.values()) / 86_400_000
     coins = "、".join(s.split("/")[0] for s in cfg.symbols)
-    lines = [f"{coins}，{'高频' if cfg.timeframe == '1m' else '普通'}模式，最近 {span:.0f} 天真实 K 线，"
-             f"本金 {args.balance:.0f} USDT，每单保证金 {cfg.max_margin_usd:g}",
+    lines = [f"{coins}，最近 {span:.0f} 天真实 K 线，本金 {args.balance:.0f} USDT，"
+             f"每单保证金 {cfg.max_margin_usd:g}",
              "已扣手续费。回测只是参考，不保证以后一样。", ""]
     rows.sort(key=lambda r: -r[1]["end_equity"])
     for rank, (name, st) in enumerate(rows, 1):

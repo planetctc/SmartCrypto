@@ -29,6 +29,7 @@ class StrategyConfig:
     breakout_lookback: int = 20
     volume_lookback: int = 20
     volume_factor: float = 1.2
+    trend_min_gap: float = 0.0       # only trade when the trend close is this far from its EMA
     atr_period: int = 14
     atr_stop_mult: float = 1.0
     breakeven_at_r: float = 1.0

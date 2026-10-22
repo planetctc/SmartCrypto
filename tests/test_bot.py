@@ -428,6 +428,15 @@ def test_engine_fast_maker_fill_is_not_adopted_as_unknown(tmp_path):
 
 
 # ---------- the video's way: 分批进场, 补仓 -> 平加仓, 分批止盈, off round numbers ----------
+def video_cfg() -> Config:
+    """The 大镖客 video settings (switched off in the shipped configs for now)."""
+    c = cfg()
+    st = c.strategy
+    st.scale_in_frac, st.scale_in_at_r, st.avoid_round_numbers = 0.5, 0.5, True
+    st.take_profit_r, st.take_profit_split = [1.2, 2.0, 3.0], [0.34, 0.33]
+    return c
+
+
 def test_stop_and_take_profits_avoid_round_numbers():
     from bot.strategy import off_round, round_step
     assert [round_step(x) for x in (83000, 2455, 150, 1.33, 0.15)] == \
@@ -442,7 +451,7 @@ def test_stop_and_take_profits_avoid_round_numbers():
 
 def test_trade_plan_ladder():
     from bot.strategy import trade_plan
-    c = cfg()
+    c = video_cfg()
     pl = trade_plan("long", 61200, 500, c)
     assert pl.stop < 60700 and pl.add_price == 60950
     assert len(pl.take_profits) == 3 and pl.take_profits == sorted(pl.take_profits)
@@ -450,7 +459,7 @@ def test_trade_plan_ladder():
 
 
 def _scaling_engine(tmp_path):
-    c = cfg()
+    c = video_cfg()
     c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
     b = FakeBroker(_df_ending_in_signal(c))
 
@@ -493,7 +502,7 @@ def test_engine_scale_in_then_reduce_at_cost_then_partial_take_profits(tmp_path)
 
 
 def test_backtest_scale_in_happens_and_losses_stay_bounded():
-    c = cfg()
+    c = video_cfg()
     frames = {"BTC/USDT:USDT": synthetic(8000, seed=5),
               "ETH/USDT:USDT": synthetic(8000, seed=6, start_price=3000)}
     stats, trades, _ = run_backtest(c, frames, 100)
@@ -514,7 +523,7 @@ def test_cross_margin_param_per_account_type():
 def test_take_profit_ladder_keeps_distinct_levels_on_eth():
     from bot.strategy import trade_plan
     # ETH 2486.82 with an ~8 point stop: 1.2R and 2R both sit next to 2500 (seen on demo)
-    tps = trade_plan("long", 2486.82, 8, cfg()).take_profits
+    tps = trade_plan("long", 2486.82, 8, video_cfg()).take_profits
     assert tps == sorted(set(tps)) and len(tps) == 3
 
 
@@ -524,3 +533,30 @@ def test_only_one_position_even_with_two_signals_in_one_loop(tmp_path):
     b = FakeBroker(_df_ending_in_signal(c))   # same candles -> both coins signal together
     Engine(c, b).step()
     assert len(b.opened) == 1
+
+
+def test_scale_in_off_opens_first_batch_only(tmp_path):
+    c, b, e = _scaling_engine(tmp_path)
+    c.strategy.scale_in_at_r = 0
+    e.step()
+    t = e.trades["BTC/USDT:USDT"]
+    assert t.add_plan == 0 and t.add_price == 0
+    b.px, b.now = t.initial_stop + (t.entry - t.initial_stop) * 0.1, b.now + 1000
+    e.step()
+    assert len(b.opened) == 1                    # no 补仓 even deep in the loss
+
+
+def test_shipped_configs_trade_full_size_with_one_take_profit():
+    for path in ("config.yaml", "config_hf.yaml"):
+        st = load_config(ROOT / path).strategy
+        assert st.scale_in_frac == 1 and st.scale_in_at_r == 0 and len(st.take_profit_r) == 1
+
+
+def test_trend_min_gap_filters_weak_trends():
+    c = cfg()
+    df = _df_ending_in_signal(c)
+    row = prepare(df, resample(df, c.trend_timeframe), c).iloc[-1]
+    assert signal_at(row, c)
+    gap = abs(row["trend_close"] - row["trend_ema"]) / row["trend_ema"]
+    c.strategy.trend_min_gap = gap * 1.01
+    assert signal_at(row, c) is None

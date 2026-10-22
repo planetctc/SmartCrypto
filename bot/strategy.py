@@ -80,6 +80,9 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
     vol_ratio = row["volume"] / row["vol_avg"]
     if vol_ratio < s.volume_factor:
         return None
+    trend_dist = abs(row["trend_close"] - row["trend_ema"]) / row["trend_ema"]
+    if trend_dist < s.trend_min_gap:
+        return None  # trend too weak: price is hugging its average, breakouts there fail more
 
     close, a = row["close"], row["atr"]
     if row["trend"] == 1 and close > row["hh"]:
@@ -94,7 +97,6 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
     stop = close - sign * stop_dist
     tp = close + sign * stop_dist * s.take_profit_r[-1]
 
-    trend_dist = abs(row["trend_close"] - row["trend_ema"]) / row["trend_ema"]
     strength = float(np.mean([
         np.clip((vol_ratio - s.volume_factor) / (3.0 - s.volume_factor), 0, 1),
         np.clip(trend_dist / 0.01, 0, 1),
