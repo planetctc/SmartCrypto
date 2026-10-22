@@ -27,7 +27,7 @@ NO_WINDOW = 0x08000000 if IS_WIN else 0  # CREATE_NO_WINDOW
 MODES = {"高频模式": "config_hf.yaml", "普通模式": "config.yaml"}
 KEY_VARS = ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE")
 MODE_NAMES = {"paper": "本地模拟", "demo": "Bitget 模拟盘", "live": "真钱实盘"}
-COINS = ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "LINK")
+COINS = ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "LINK", "PEPE")
 SETTINGS_FILE = ROOT / "data" / "panel_settings.json"
 MARGIN_MIN, MARGIN_MAX = 5, 15
 
@@ -279,7 +279,7 @@ class Panel(tk.Tk):
         super().__init__()
         self.title("SmartCrypto")
         self.configure(bg=BG)
-        self.geometry("880x640")
+        self.geometry("980x660")
         self.minsize(720, 520)
         self.font = "Microsoft YaHei UI" if IS_WIN else "WenQuanYi Zen Hei"
         self.proc: subprocess.Popen | None = None
