@@ -21,6 +21,10 @@ log = logging.getLogger("bot.engine")
 HISTORY_BARS = 300
 
 
+def sign_of(side: str) -> int:
+    return 1 if side == "long" else -1
+
+
 @dataclass
 class Trade:
     side: str
@@ -330,6 +334,26 @@ class Engine:
             self._try_open(sym, sig, now, positions)
         return trend, sig is not None
 
+    def _leader_move(self, now: int) -> float | None:
+        """BTC's change over the last leader_bars closed bars (cached per bar), None if off.
+
+        Live 2026-10-23: shorts on every coin won while the whole market fell and were stopped
+        together when it bounced; BTC leads those turns, so its last few minutes say which way
+        the small coins are about to go."""
+        n = self.cfg.leader_bars
+        if n <= 0:
+            return None
+        bar = now // self.tf_ms
+        if getattr(self, "_leader", (None,))[0] != bar:
+            try:
+                df = self.broker.ohlcv(self.cfg.leader_symbol, self.cfg.timeframe, n + 5)
+                c = df["close"].to_numpy()
+                self._leader = (bar, float(c[-1] / c[-1 - n] - 1) if len(c) > n else None)
+            except Exception as e:  # noqa: BLE001 - never block trading on this
+                log.warning("leader check not read (%s)", e)
+                self._leader = (bar, None)
+        return self._leader[1]
+
     def _open_risk(self) -> float:
         """USDT lost if every open trade hit its stop now (trades already at break-even add 0)."""
         f = self.cfg.fees
@@ -387,6 +411,11 @@ class Engine:
         ok, why = self.risk.can_open(now, sym, busy - len(swap), equity)
         if not ok:
             log.info("%s signal skipped: %s", sym, why)
+            return
+        move = self._leader_move(now)
+        if move is not None and sign_of(sig.side) * move < 0:
+            log.info("%s signal skipped: BTC moving against it (%+.2f%% in %d bars)", sym,
+                     move * 100, self.cfg.leader_bars)
             return
         if self.cfg.flow_confirm and hasattr(self.broker, "flow"):
             try:

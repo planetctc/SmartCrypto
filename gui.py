@@ -237,6 +237,9 @@ def _friendly(line: str) -> str:
         return (f"{t}  {coin(r[1])} 平仓 @ {r[2]}（{REASONS.get(r[3], r[3])}），"
                 f"约 {float(r[4]):+.2f} USDT")
     if r := re.match(r"(\S+) signal skipped: (.*)", msg):
+        if m := re.match(r"BTC moving against it \((\S+)% in (\d+) bars\)", r[2]):
+            return (f"{t}  {coin(r[1])} 有信号但没开单：BTC 最近 {m[2]} 分钟 {float(m[1]):+.2f}%，"
+                    f"大盘在反方向走")
         if m := re.match(r"free balance (\S+) too small", r[2]):
             return f"{t}  {coin(r[1])} 有信号但没开单：可用余额只剩 {m[1]}"
         if m := re.match(r"loss budget left (\S+), open trades risk (\S+)", r[2]):

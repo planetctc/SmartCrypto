@@ -88,6 +88,10 @@ class Config:
     replace_on_new_signal: bool = False
     # before opening, check the live order book and taker flow agree with the signal
     flow_confirm: bool = False
+    # only trade with the market leader: skip a short while BTC rose over the last
+    # leader_bars bars (and a long while it fell); 0 = off
+    leader_bars: int = 0
+    leader_symbol: str = "BTC/USDT:USDT"
     entry_order: str = "market"      # "market" or "maker" (post-only limit, lower fee)
     maker_timeout_seconds: int = 60  # cancel an unfilled maker entry after this long
     # take-profit as a resting reduce-only limit order (maker fee, no slippage) instead of the

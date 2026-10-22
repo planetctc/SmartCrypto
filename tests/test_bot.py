@@ -1085,3 +1085,23 @@ def test_close_after_exchange_already_closed_is_not_an_error():
     br.cancel_triggers = lambda s: None
     br.price = lambda s: 2381.0
     assert br.close("ETH/USDT:USDT", Position("ETH/USDT:USDT", "short", 0.1, 2382, 0, 0, 10)) == 2381.0
+
+
+def test_no_short_while_btc_is_rising_over_the_last_bars(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file, c.leader_bars = ["ETH/USDT:USDT"], str(tmp_path / "s.json"), 3
+    df = _df_ending_in_signal(c)
+    b = FakeBroker(df)
+    e = Engine(c, b)
+    e.step()
+    assert b.opened  # control: leader moved with the signal (same candles)
+    side = b.opened[0][1]
+    b2 = FakeBroker(df)
+    against = df.copy()
+    k = -1 if side == "short" else 1  # BTC going the other way in its last bars
+    against.loc[against.index[-3:], "close"] = against["close"].iloc[-4] * (1 - k * 0.01)
+    real = b2.ohlcv
+    b2.ohlcv = lambda s, tf, n: against.tail(n) if s.startswith("BTC") and tf == c.timeframe else real(s, tf, n)
+    c.state_file = str(tmp_path / "s2.json")
+    Engine(c, b2).step()
+    assert not b2.opened
