@@ -782,3 +782,66 @@ def test_order_book_recorder_counts_only_new_trades(tmp_path):
     assert second.bid == 100 and second.ask == 101
     assert second.bid_qty5 == 5 and second.ask_qty15 == 30
     assert second.maybe_missed == 0
+
+
+class FakeSelftestBroker:
+    def __init__(self, refuse_tp=False):
+        self.px, self.pos, self.orders, self.refuse_tp, self.calls = 60000.0, {}, {}, refuse_tp, []
+
+    def setup_symbol(self, s): self.calls.append("setup")
+    def price(self, s): return self.px
+    def leverage_for(self, s): return 100
+    def round_qty(self, s, q): return math.floor(q * 1e4) / 1e4
+    def positions(self): return dict(self.pos)
+
+    def open_maker(self, s, side, qty, price, stop, tp):
+        self.orders["e"] = "open"
+        return "e"
+
+    def order_status(self, s, oid):
+        return self.orders[oid], 0.0, 0.0
+
+    def cancel_order(self, s, oid):
+        if oid in self.orders:
+            self.orders[oid] = "canceled"
+
+    def open(self, s, side, qty, stop, tp):
+        assert tp == 0
+        self.pos[s] = Position(s, side, qty, self.px, 0, 0, 10)
+        return self.px
+
+    def place_tp(self, s, side, qty, price):
+        if self.refuse_tp:
+            raise RuntimeError("40000 reduceOnly postOnly not supported")
+        self.orders["tp"] = "open"
+        return "tp"
+
+    def close(self, s, p):
+        self.pos.pop(s)
+        return self.px
+
+
+def test_selftest_runs_every_order_type_and_leaves_nothing_open():
+    from bot.selftest import report, run_selftest
+    b = FakeSelftestBroker()
+    res = run_selftest(b, "BTC/USDT:USDT", 10, pause=0)
+    assert [ok for _, ok, _ in res] == [True] * 6
+    assert not b.pos and b.orders == {"e": "canceled", "tp": "canceled"}
+    assert "全部通过" in report("BTC/USDT:USDT", res)
+
+
+def test_selftest_reports_refused_take_profit_and_still_closes():
+    from bot.selftest import report, run_selftest
+    b = FakeSelftestBroker(refuse_tp=True)
+    res = run_selftest(b, "BTC/USDT:USDT", 10, pause=0)
+    assert any(not ok and "postOnly" in d for _, ok, d in res)
+    assert not b.pos
+    assert "没通过" in report("BTC/USDT:USDT", res)
+
+
+def test_selftest_refuses_when_coin_already_has_a_position():
+    from bot.selftest import run_selftest
+    b = FakeSelftestBroker()
+    b.pos["BTC/USDT:USDT"] = Position("BTC/USDT:USDT", "long", 1, 1, 0, 0, 1)
+    res = run_selftest(b, "BTC/USDT:USDT", 10, pause=0)
+    assert len(res) == 1 and not res[0][1] and "setup" not in b.calls

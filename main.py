@@ -262,6 +262,20 @@ def cmd_tune(cfg, args):
     print("\n" + report)
 
 
+def cmd_selftest(cfg, args):
+    """测试下单: run every order type once on the Bitget demo account and write a report."""
+    from bot.exchange import BitgetBroker
+    from bot.selftest import report, run_selftest
+    if cfg.mode != "demo":
+        sys.exit("测试下单只在模拟盘（mode: demo）上跑")
+    sym = cfg.symbols[0]
+    text = report(sym, run_selftest(BitgetBroker(cfg, demo=True), sym, cfg.max_margin_usd))
+    out = Path(args.data_dir)
+    out.mkdir(exist_ok=True)
+    (out / "selftest_report.txt").write_text(text, encoding="utf-8")
+    print(text)
+
+
 def cmd_record(cfg, args):
     """Record order book + trades (盘口) for the chosen coins until stopped."""
     import atexit
@@ -326,7 +340,7 @@ def main():
     force_utf8_output()
     from bot.config import load_config
     ap = argparse.ArgumentParser(description="SmartCrypto Bitget futures bot")
-    ap.add_argument("command", choices=["download", "backtest", "compare", "tune", "run", "record"])
+    ap.add_argument("command", choices=["download", "backtest", "compare", "tune", "run", "record", "selftest"])
     ap.add_argument("--configs", nargs="+", default=["config.yaml", "config_hf.yaml"],
                     help="compare 用的配置文件")
     ap.add_argument("--config", default="config.yaml")
@@ -345,7 +359,8 @@ def main():
     setup_logging(cfg.log_file if args.command == "run" else str(Path(args.data_dir) / "tools.log"))
     print(BANNER)
     {"download": cmd_download, "backtest": cmd_backtest, "compare": cmd_compare,
-     "tune": cmd_tune, "run": cmd_run, "record": cmd_record}[args.command](cfg, args)
+     "tune": cmd_tune, "run": cmd_run, "record": cmd_record,
+     "selftest": cmd_selftest}[args.command](cfg, args)
 
 
 if __name__ == "__main__":

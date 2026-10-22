@@ -77,6 +77,11 @@ def record_command(coins: list[str]) -> list[str]:
 RECORD_PID = ROOT / "data" / "record.pid"
 
 
+def selftest_command(config_file: str, coin: str, margin: float) -> list[str]:
+    return [sys.executable, str(ROOT / "main.py"), "selftest", "--config", config_file,
+            "--coins", coin, "--margin", f"{margin:g}"]
+
+
 def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -273,6 +278,7 @@ class Panel(tk.Tk):
         self.font = "Microsoft YaHei UI" if IS_WIN else "WenQuanYi Zen Hei"
         self.proc: subprocess.Popen | None = None
         self.tune_proc: subprocess.Popen | None = None
+        self.test_proc: subprocess.Popen | None = None
         self.mode = tk.StringVar(value="高频模式")
         self.raw = tk.BooleanVar(value=False)
         st = load_settings()
@@ -336,7 +342,9 @@ class Panel(tk.Tk):
         self.tune_btn = self._button(tools, "回测比较", BLUE, self.tune)
         self.tune_btn.pack(side="left", padx=(6, 8))
         self.rec_btn = self._button(tools, "记录盘口", BLUE, self.toggle_record)
-        self.rec_btn.pack(side="left")
+        self.rec_btn.pack(side="left", padx=(0, 8))
+        self.test_btn = self._button(tools, "测试下单", BLUE, self.selftest)
+        self.test_btn.pack(side="left")
 
         pick = tk.Frame(self, bg=BG)
         pick.pack(fill="x", padx=16, pady=(2, 4))
@@ -442,6 +450,7 @@ class Panel(tk.Tk):
             self.after_cancel(self._job)
         self.check_tune()
         self.check_record()
+        self.check_selftest()
         self._job = self.after(1500, self.refresh)
 
     def refresh_log(self):
@@ -576,6 +585,57 @@ class Panel(tk.Tk):
         box = tk.Text(win, bg=CARD, fg=FG, relief="flat", wrap="word", padx=12, pady=10,
                       font=(self.font, 11))
         box.insert("1.0", report)
+        box.configure(state="disabled")
+        box.pack(fill="both", expand=True, padx=12, pady=12)
+
+    def selftest(self):
+        """测试下单: one pass of every order type on the demo account, about a minute."""
+        if self.test_proc is not None:
+            return
+        coins, margin = self.choices()
+        if not coins or margin is None:
+            messagebox.showwarning("SmartCrypto", "先勾选币种，并把每单保证金设在 5–15 之间。")
+            return
+        cfg_file = MODES[self.mode.get()]
+        _, pid_file, mode = read_paths(cfg_file)
+        if running_pid(pid_file) or self.other_running():
+            messagebox.showwarning("SmartCrypto", "机器人在运行，先停止再测试下单。")
+            return
+        if mode != "demo":
+            messagebox.showwarning("SmartCrypto", "测试下单只在 Bitget 模拟盘上跑。")
+            return
+        if not all(os.environ.get(k) for k in KEY_VARS):
+            messagebox.showwarning("SmartCrypto", "先设置 API key。")
+            return
+        if not messagebox.askyesno("测试下单", f"在模拟盘用 {coins[0]} 开一张小单、挂止损止盈、"
+                                   "再马上平掉，大约一分钟。继续？"):
+            return
+        data = ROOT / "data"
+        data.mkdir(exist_ok=True)
+        err = open(data / "selftest_errors.log", "w", encoding="utf-8")
+        self.test_proc = subprocess.Popen(
+            selftest_command(cfg_file, coins[0], margin), cwd=str(ROOT),
+            env=dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8"),
+            stdout=subprocess.DEVNULL, stderr=err, creationflags=NO_WINDOW)
+        self.test_btn.configure(text="测试中…", state="disabled")
+
+    def check_selftest(self):
+        if self.test_proc is None or self.test_proc.poll() is None:
+            return
+        code, self.test_proc = self.test_proc.returncode, None
+        self.test_btn.configure(text="测试下单", state="normal")
+        try:
+            text = (ROOT / "data" / "selftest_report.txt").read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        if code != 0 or not text:
+            text = "测试没有跑完：\n\n" + "\n".join(tail(ROOT / "data" / "selftest_errors.log")[-8:])
+        win = tk.Toplevel(self, bg=BG)
+        win.title("测试下单")
+        win.geometry("620x360")
+        box = tk.Text(win, bg=CARD, fg=FG, relief="flat", wrap="word", padx=12, pady=10,
+                      font=(self.font, 11))
+        box.insert("1.0", text)
         box.configure(state="disabled")
         box.pack(fill="both", expand=True, padx=12, pady=12)
 
