@@ -83,6 +83,8 @@ class Config:
     # 宁杀错不放过: when every slot is taken and another coin signals, close a trade whose
     # stop is not yet at break-even (and drop waiting limit entries) to take the new one
     replace_on_new_signal: bool = False
+    # before opening, check the live order book and taker flow agree with the signal
+    flow_confirm: bool = False
     entry_order: str = "market"      # "market" or "maker" (post-only limit, lower fee)
     maker_timeout_seconds: int = 60  # cancel an unfilled maker entry after this long
     # take-profit as a resting reduce-only limit order (maker fee, no slippage) instead of the

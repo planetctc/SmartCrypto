@@ -22,6 +22,32 @@ COLUMNS = ["ts", "bid", "ask", "bid_qty5", "ask_qty5", "bid_qty15", "ask_qty15",
 TRADES_LIMIT = 100
 
 
+def live_flow(ex, symbol: str) -> dict:
+    """Right-now order flow for one coin: resting size on the 5 best levels each side and the
+    aggressor volume of the last TRADES_LIMIT trades (who is hitting whom)."""
+    book = ex.fetch_order_book(symbol, 15)
+    trades = ex.fetch_trades(symbol, None, TRADES_LIMIT)
+    return {"bid_qty5": sum(a for _, a, *_ in book["bids"][:5]),
+            "ask_qty5": sum(a for _, a, *_ in book["asks"][:5]),
+            "buy_qty": sum(t["amount"] for t in trades if t["side"] == "buy"),
+            "sell_qty": sum(t["amount"] for t in trades if t["side"] == "sell")}
+
+
+def flow_agrees(side: str, f: dict, min_share: float = 0.5,
+                max_wall: float = 0.3) -> tuple[bool, float, float]:
+    """(ok, share of recent taker volume on our side, book imbalance toward our side).
+
+    A breakout that is real is being pushed by takers on its side right now; one where the
+    other side is doing the hitting, or a thick wall sits in the way, is the kind that fails.
+    """
+    sign = 1 if side == "long" else -1
+    taker = f["buy_qty"] + f["sell_qty"]
+    share = (f["buy_qty"] if sign > 0 else f["sell_qty"]) / taker if taker else 0.5
+    book = f["bid_qty5"] + f["ask_qty5"]
+    imb = sign * (f["bid_qty5"] - f["ask_qty5"]) / book if book else 0.0
+    return share >= min_share and imb > -max_wall, share, imb
+
+
 class Recorder:
     def __init__(self, ex, symbols: list[str], out_dir: str | Path):
         self.ex, self.symbols = ex, symbols

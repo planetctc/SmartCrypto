@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .config import Config
 from .exchange import Position
+from .orderflow import flow_agrees
 from .risk import RiskManager, RiskState
 from .strategy import TF_MS, manage_position, prepare, scales_in, signal_at, trade_plan
 
@@ -377,6 +378,16 @@ class Engine:
         if not ok:
             log.info("%s signal skipped: %s", sym, why)
             return
+        if self.cfg.flow_confirm and hasattr(self.broker, "flow"):
+            try:
+                ok, share, imb = flow_agrees(sig.side, self.broker.flow(sym))
+            except Exception as e:  # noqa: BLE001 - no flow data must not block trading
+                log.warning("%s order flow not read (%s), trading the signal anyway", sym, e)
+            else:
+                log.info("FLOW %s %s taker %.0f%% book %+.2f %s", sym, sig.side, share * 100,
+                         imb, "ok" if ok else "against")
+                if not ok:
+                    return
         price = self.broker.price(sym)
         dist = abs(sig.entry - sig.stop)
         sign = 1 if sig.side == "long" else -1

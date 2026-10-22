@@ -1011,3 +1011,34 @@ def test_limit_take_profit_is_measured_from_the_real_fill(tmp_path):
     t = e.trades[s]
     r = c.strategy.take_profit_r[-1]
     assert abs(t.take_profit - t.entry) == pytest.approx(abs(t.entry - stop) * r, rel=0.01)
+
+
+def test_flow_agrees_with_takers_on_our_side_and_no_wall():
+    from bot.orderflow import flow_agrees
+    f = {"bid_qty5": 10, "ask_qty5": 12, "buy_qty": 3, "sell_qty": 7}
+    assert flow_agrees("short", f)[0] and not flow_agrees("long", f)[0]
+    wall = {"bid_qty5": 50, "ask_qty5": 5, "buy_qty": 3, "sell_qty": 7}  # big bids under a short
+    assert not flow_agrees("short", wall)[0]
+
+
+def test_signal_against_the_order_flow_is_not_opened(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file, c.flow_confirm = ["BTC/USDT:USDT"], str(tmp_path / "s.json"), True
+    b = FakeBroker(_df_ending_in_signal(c))
+    e = Engine(c, b)
+    e.step()
+    side = b.opened[0][1] if b.opened else None
+    assert side  # control: opens without flow data
+
+    b2 = FakeBroker(_df_ending_in_signal(c))
+    against = {"bid_qty5": 10, "ask_qty5": 10,
+               "buy_qty": 9 if side == "short" else 1, "sell_qty": 1 if side == "short" else 9}
+    b2.flow = lambda s: against
+    c.state_file = str(tmp_path / "s2.json")
+    Engine(c, b2).step()
+    assert not b2.opened
+    b3 = FakeBroker(_df_ending_in_signal(c))
+    b3.flow = lambda s: {**against, "buy_qty": against["sell_qty"], "sell_qty": against["buy_qty"]}
+    c.state_file = str(tmp_path / "s3.json")
+    Engine(c, b3).step()
+    assert b3.opened

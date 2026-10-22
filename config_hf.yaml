@@ -34,6 +34,7 @@ min_margin_usd: 5      # 每单最少保证金（信号一般时）
 max_margin_usd: 15     # 每单最多保证金（信号强时）
 max_open_positions: 8  # 每个币最多一单，不同币可以同时开（不错过信号）
 replace_on_new_signal: false  # 不同币可以同时开，不用平掉换单
+flow_confirm: true   # K 线出信号后再看实时盘口：主动成交方向要跟信号一致、前面没有大单墙，才开单
 
 # 进场方式:
 #   market = 市价单，马上成交，手续费 0.06%

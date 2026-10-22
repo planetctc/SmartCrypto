@@ -146,6 +146,10 @@ class BitgetBroker:
     def price(self, symbol: str) -> float:
         return float(retry(self.ex.fetch_ticker, symbol)["last"])
 
+    def flow(self, symbol: str) -> dict:
+        from .orderflow import live_flow
+        return retry(live_flow, self.ex, symbol)
+
     def now_ms(self) -> int:
         return self.ex.milliseconds()
 
@@ -319,6 +323,10 @@ class PaperBroker:
 
     def price(self, symbol):
         return float(retry(self.ex.fetch_ticker, symbol)["last"])
+
+    def flow(self, symbol):
+        from .orderflow import live_flow
+        return retry(live_flow, self.ex, symbol)
 
     def now_ms(self):
         return self.ex.milliseconds()
