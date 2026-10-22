@@ -257,6 +257,12 @@ class BitgetBroker:
             self.ex.cancel_order(order_id, symbol)
         except (ccxt.OrderNotFound, ccxt.InvalidOrder) as e:
             log.info("cancel %s on %s: %s", order_id, symbol, e)
+        except ccxt.ExchangeError as e:
+            # Bitget UTA answers 25204 "Order does not exist" (already filled or gone) as a
+            # generic error; nothing is left to cancel then
+            if "25204" not in str(e) and "does not exist" not in str(e):
+                raise
+            log.info("cancel %s on %s: already gone", order_id, symbol)
 
     def close(self, symbol: str, pos: Position) -> float:
         side = "sell" if pos.side == "long" else "buy"

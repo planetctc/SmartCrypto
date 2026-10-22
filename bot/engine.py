@@ -304,14 +304,21 @@ class Engine:
         busy = len(positions.keys() | self.trades.keys()) + len(self.pending)
         if not others or not self.risk.can_open(now, sym, busy - len(others), equity)[0]:
             return 0
+        fresh = None
         for s in others:
             if s in self.pending:
                 self._cancel_pending(s, now, positions)
-            elif s in positions:
+                continue
+            if s not in positions:
+                # opened earlier in this same loop, after `positions` was read
+                fresh = fresh if fresh is not None else self.broker.positions()
+                if s in fresh:
+                    positions[s] = fresh[s]
+            if s in positions:
                 log.info("%s new signal on %s: closing %s to take it", s, sym, s)
                 self._close(s, positions.pop(s), now, "replaced by new signal")
             else:
-                self.trades.pop(s, None)
+                self._cancel_tp(s, self.trades.pop(s, None))
         return len(others)
 
     def _try_open(self, sym, sig, now, positions) -> None:
@@ -373,6 +380,7 @@ class Engine:
         self.trades[sym] = Trade(sig.side, qty, fill, stop, stop, tp, fill, now, **extra)
         pos = self.broker.positions().get(sym)
         if pos:
+            positions[sym] = pos  # keep this loop's snapshot current for the next coins
             self._liq_safety(sym, pos, stop, now)
         if sym in self.trades:
             self._place_tp(sym, self.trades[sym])

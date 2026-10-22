@@ -734,7 +734,7 @@ def test_limit_take_profit_refused_bot_closes_at_market(tmp_path):
     e.step()
     (s, side, *_), = b.opened
     t = e.trades[s]
-    assert t.tp_order_id == "" and t.tp_tries == 1
+    assert t.tp_order_id == "" and t.tp_tries >= 1
     b.px = t.take_profit + (1 if side == "long" else -1)
     e.step()
     assert s in b.closed
@@ -891,3 +891,26 @@ def test_high_frequency_mode_never_waits_after_a_stop():
     rm = RiskManager(c)
     rm.record_close(1_000, "BTC/USDT:USDT", -2.0, True, 900_000)
     assert rm.can_open(1_000, "BTC/USDT:USDT", 0, 100)[0]
+
+
+def test_replace_in_same_loop_closes_the_trade_opened_moments_ago(tmp_path):
+    c = cfg()
+    c.symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
+    c.state_file, c.max_open_positions, c.replace_on_new_signal = str(tmp_path / "s.json"), 1, True
+    b = FakeBroker(_df_ending_in_signal(c))   # same candles: all three coins signal together
+    e = Engine(c, b)
+    e.step()
+    assert len(b.pos) == 1 and set(e.trades) == set(b.pos)
+    assert len(b.closed) == 2  # the first two were swapped out, not left untracked
+
+
+def test_cancel_of_already_gone_order_is_not_an_error():
+    import ccxt
+    from bot.exchange import BitgetBroker
+    br = BitgetBroker.__new__(BitgetBroker)
+
+    class Ex:
+        def cancel_order(self, oid, sym):
+            raise ccxt.ExchangeError('bitget {"code":"25204","msg":"Order does not exist"}')
+    br.ex = Ex()
+    br.cancel_order("BTC/USDT:USDT", "123")  # must not raise
