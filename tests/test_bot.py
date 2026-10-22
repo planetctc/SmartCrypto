@@ -587,7 +587,7 @@ def test_tune_variants_cover_every_signal_and_config_is_valid():
     import main
     from bot.config import validate
     variants = main.tune_variants()
-    assert len(variants) == 9
+    assert len(variants) == 10
     assert {v[1]["timeframe"] for v in variants} == {"5m", "15m", "1h"}
     assert {v[2]["signal_type"] for v in variants} == {"score", "breakout"}
     for _, top, change, _ in variants:
@@ -654,3 +654,38 @@ def test_score_has_no_lookahead():
     part = prepare(cut, resample(cut, c.trend_timeframe), c)
     pd.testing.assert_series_equal(full["score"].iloc[:1990].reset_index(drop=True),
                                    part["score"].iloc[:1990].reset_index(drop=True))
+
+
+def _minute_walk(n, seed):
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    p = 60000 * np.exp(np.cumsum(rng.normal(0, 0.0008, n)))
+    o = np.r_[p[0], p[:-1]]
+    return pd.DataFrame(dict(ts=1_700_000_000_000 + np.arange(n) * 60_000, open=o,
+                             high=np.maximum(o, p) * (1 + rng.uniform(0, 5e-4, n)),
+                             low=np.minimum(o, p) * (1 - rng.uniform(0, 5e-4, n)),
+                             close=p, volume=rng.uniform(1, 10, n)))
+
+
+def test_minute_bars_group_by_parent_bar():
+    from bot.backtest import minute_bars
+    df = _minute_walk(30, 1)
+    m = minute_bars(df, "5m")
+    assert sum(len(v) for v in m.values()) == 30
+    for k, v in m.items():
+        assert k % 300_000 == 0 and len(v) <= 5
+
+
+def test_minute_exits_remove_same_bar_pessimism_for_small_take_profits():
+    df = _minute_walk(60 * 24 * 20, 7)
+    c = cfg()
+    c.entry_order = "maker"
+    c.strategy.signal_type, c.strategy.min_score, c.strategy.volume_factor = "score", 4, 0
+    c.strategy.take_profit_r = [0.5]
+    c.risk.min_equity_stop_usd, c.capital_usd = 0, 0
+    sym = "BTC/USDT:USDT"
+    _, coarse, _ = run_backtest(c, {sym: resample(df, "5m")}, 100_000)
+    _, fine, _ = run_backtest(c, {sym: resample(df, "5m")}, 100_000, {sym: df})
+    assert len(fine) > 50
+    assert (fine.pnl > 0).mean() > (coarse.pnl > 0).mean()
+    assert fine.pnl.min() >= -c.risk.max_loss_per_trade_usd - 1e-6

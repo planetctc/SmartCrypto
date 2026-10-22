@@ -39,6 +39,7 @@ max_open_positions: 1  # 同时只开一单
 #   maker  = 挂单（只做 maker），手续费 0.02%，但价格跑掉就不成交
 entry_order: market   # 市价进场：信号出来马上成交，不会因为挂单没成交让行情跑掉
 maker_timeout_seconds: 45   # 挂单多少秒没成交就撤单
+tp_order: market   # 止盈方式：market = 交易所止盈单（触发后市价）；maker = 挂限价单止盈（手续费低，目前只在回测里用）
 
 # ---------------- 风控（减少亏损的关键） ----------------
 risk:

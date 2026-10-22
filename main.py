@@ -108,21 +108,25 @@ def tune_variants():
     combination the panel compares.
 
     Fast in-and-out (快打快出): breakout and the 9-indicator score on 5m/15m with small
-    take-profits (0.5R and 1R of a 0.3%+ stop), all with limit-order entry. The 1h breakout,
-    the only signal so far to make money in both parts, stays in as the yardstick.
+    take-profits, limit-order entry AND limit-order take-profit (maker fee both ways, no
+    slippage on the way out). Exits are simulated minute by minute. The 1h breakout, the only
+    signal so far to make money in both parts, stays in as the yardstick.
     """
     out = []
     for tf_name, tf, trend_tf in SCALP_TIMEFRAMES:
-        top = {"timeframe": tf, "trend_timeframe": trend_tf, "entry_order": "maker"}
+        top = {"timeframe": tf, "trend_timeframe": trend_tf, "entry_order": "maker",
+               "tp_order": "maker"}
         for tp in (0.5, 1.0):
-            out.append((f"{tf_name}·突破·止盈 {tp:g} 倍", top,
+            out.append((f"{tf_name}·突破·止盈 {tp:g} 倍·挂单止盈", top,
                         {"signal_type": "breakout", "take_profit_r": [tp]}, False))
-            out.append((f"{tf_name}·综合打分 4 项以上·止盈 {tp:g} 倍", top,
+            out.append((f"{tf_name}·综合打分 4 项以上·止盈 {tp:g} 倍·挂单止盈", top,
                         {"signal_type": "score", "min_score": 4, "volume_factor": 0.0,
                          "take_profit_r": [tp]}, True))
-    out.append(("1 小时·突破·止盈 2 倍（对照）",
-                {"timeframe": "1h", "trend_timeframe": "4h", "entry_order": "maker"},
-                {"signal_type": "breakout", "take_profit_r": [2.0]}, False))
+    for tp_order, label in (("market", "（对照）"), ("maker", "·挂单止盈")):
+        out.append((f"1 小时·突破·止盈 2 倍{label}",
+                    {"timeframe": "1h", "trend_timeframe": "4h", "entry_order": "maker",
+                     "tp_order": tp_order},
+                    {"signal_type": "breakout", "take_profit_r": [2.0]}, False))
     return out
 
 
@@ -194,7 +198,8 @@ def cmd_tune(cfg, args):
         for k, v in change.items():
             setattr(c.strategy, k, v)
         frames = {x: resample(base[x], c.timeframe) for x in syms}
-        return run_backtest(c, frames, 100_000.0)[1]
+        # stops and take-profits checked minute by minute inside each bar
+        return run_backtest(c, frames, 100_000.0, {x: base[x] for x in syms})[1]
 
     variants = tune_variants()
     rows = []

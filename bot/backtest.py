@@ -3,6 +3,10 @@
 Conservative assumptions: entries fill at the next bar's open plus slippage, taker fee on both
 sides, if a bar touches both stop and take-profit the stop is assumed to hit first, and a bar
 that opens beyond the stop fills at that worse open price (gap). Funding fees are ignored.
+
+When 1-minute bars are passed as `fine`, stops and take-profits are checked minute by minute
+inside each bar instead, so "both touched in one bar" only stays ambiguous within one minute.
+That matters for fast trades whose stop and target often sit inside a single 5m/15m bar.
 """
 from __future__ import annotations
 
@@ -54,12 +58,26 @@ class BtPos:
     votes: str = ""              # score signal: indicators that agreed, comma separated
 
 
-def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: float = 100.0):
+def minute_bars(df: pd.DataFrame, tf: str) -> dict[int, np.ndarray]:
+    """1m bars grouped by the start of the tf bar they belong to: {bar ts: [[o, h, l, c], ...]}."""
+    step = TF_MS[tf]
+    arr = df[["open", "high", "low", "close"]].to_numpy()
+    keys = (df["ts"].to_numpy() // step) * step
+    cuts = np.flatnonzero(np.diff(keys)) + 1
+    return {int(keys[g[0]]): arr[g] for g in np.split(np.arange(len(df)), cuts) if len(g)}
+
+
+def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: float = 100.0,
+                 fine: dict[str, pd.DataFrame] | None = None):
     fee, slip = cfg.fees.taker, cfg.fees.slippage
     step = TF_MS[cfg.timeframe]
+    # minute-by-minute exits (not with 补仓, whose rules are written per bar)
+    minutes = {sym: minute_bars(df, cfg.timeframe) for sym, df in fine.items()} \
+        if fine and not scales_in(cfg) else {}
     risk = RiskManager(cfg)
 
     maker = cfg.entry_order == "maker"
+    tp_maker = cfg.tp_order == "maker"
     # ts -> row dict per symbol: much faster than DataFrame.loc inside the loop
     prepared: dict[str, dict[int, dict]] = {}
     for sym, df in frames.items():
@@ -79,6 +97,9 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
         sign = 1 if p.side == "long" else -1
         if why == "liquidated":
             pnl, fill = -p.margin, p.liq
+        elif why == "take-profit" and tp_maker:
+            fill = px  # resting limit: exact price, maker fee
+            pnl = sign * (fill - p.entry) * p.qty - cfg.fees.maker * fill * p.qty
         else:
             fill = px * (1 - sign * slip)
             pnl = sign * (fill - p.entry) * p.qty - fee * fill * p.qty
@@ -88,7 +109,9 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
         trades.append({"symbol": sym, "side": p.side, "open_time": p.opened_ts, "close_time": ts,
                        "entry": p.entry, "exit": fill, "qty": p.qty, "margin": p.planned_margin,
                        "pnl": pnl - p.entry_fee,  # include the opening fee
-                       "fees": p.entry_fee + (0.0 if why == "liquidated" else fee * fill * p.qty),
+                       "fees": p.entry_fee + (0.0 if why == "liquidated" else
+                                              (cfg.fees.maker if why == "take-profit" and tp_maker
+                                               else fee) * fill * p.qty),
                        "reason": why, "bars": i - p.opened_i, "adds": p.adds, "votes": p.votes})
 
     def scale(p, sym, row, i):
@@ -190,37 +213,59 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
                              tp_qtys=[qty * f for f in st.take_profit_split],
                              planned_margin=sizing.margin, votes=",".join(sig.votes))
 
-        # 2) manage open positions against this bar's range
+        # 2) manage open positions against this bar's range (or its minutes)
         for sym in list(pos):
             row, p = prepared[sym].get(ts), pos[sym]
             if row is None:
                 continue
             sign = 1 if p.side == "long" else -1
-            o, h, l, c = row["open"], row["high"], row["low"], row["close"]
-            adverse, favorable = (l, h) if p.side == "long" else (h, l)
-            added = sign * (o - p.liq) > 0 and sign * (o - p.stop) > 0 and \
-                not (maker and p.opened_i == i) and scale(p, sym, row, i)
-            if sign * (o - p.liq) <= 0:
-                close_pos(sym, p.liq, ts, "liquidated", i)
-            elif sign * (o - p.stop) <= 0:
-                close_pos(sym, o, ts, "stop", i)            # gapped through stop
-            elif sign * (adverse - p.stop) <= 0:
-                why = "stop" if p.stop == p.initial_stop else "managed stop hit"
-                close_pos(sym, p.stop, ts, why, i)
-            elif added or (maker and p.opened_i == i):
-                # maker fill bar: we can't know if the high/low that would count for us came
-                # before or after the fill, so only the stop is checked on this bar
-                continue
-            elif sign * (favorable - p.tp) >= 0 and p.add_state != "open":
-                close_pos(sym, p.tp, ts, "take-profit", i)
+            fill_bar = maker and p.opened_i == i
+            sub = minutes.get(sym, {}).get(ts) if minutes else None
+            if sub is None:
+                sub = np.array([[row["open"], row["high"], row["low"], row["close"]]])
+                start = 0
+            elif fill_bar:
+                # the limit filled in the first minute that traded through it
+                lim = p.first_entry
+                through = sub[:, 2] < lim if p.side == "long" else sub[:, 1] > lim
+                start = int(np.argmax(through)) if through.any() else len(sub) - 1
             else:
-                p.best = max(p.best, h) if p.side == "long" else min(p.best, l)
-                d = manage_position(p.side, p.first_entry, p.stop, p.initial_stop, c, p.best,
-                                    row["atr"], i - p.opened_i, cfg)
-                if d.new_stop is not None:
-                    p.stop = d.new_stop
-                if d.close:
-                    close_pos(sym, c, ts, d.reason, i)
+                start = 0
+            o = sub[start][0]
+            added = sign * (o - p.liq) > 0 and sign * (o - p.stop) > 0 and \
+                not fill_bar and scale(p, sym, row, i)
+            done = False
+            for k in range(start, len(sub)):
+                o, h, l, c = sub[k]
+                adverse, favorable = (l, h) if p.side == "long" else (h, l)
+                if sign * (o - p.liq) <= 0 and not (fill_bar and k == start):
+                    close_pos(sym, p.liq, ts, "liquidated", i)
+                elif sign * (o - p.stop) <= 0 and not (fill_bar and k == start):
+                    close_pos(sym, o, ts, "stop", i)            # gapped through stop
+                elif sign * (adverse - p.stop) <= 0:
+                    why = "stop" if p.stop == p.initial_stop else "managed stop hit"
+                    close_pos(sym, p.stop, ts, why, i)
+                elif added or (fill_bar and k == start):
+                    # fill (or 补仓) minute: we can't know if the high/low that would count
+                    # for us came before or after it, so only the stop is checked there
+                    continue
+                elif (sign * (favorable - p.tp) > 0 if tp_maker else sign * (favorable - p.tp) >= 0) \
+                        and p.add_state != "open":
+                    # a resting limit only counts as filled when price trades through it
+                    close_pos(sym, p.tp, ts, "take-profit", i)
+                else:
+                    p.best = max(p.best, h) if p.side == "long" else min(p.best, l)
+                    continue
+                done = True
+                break
+            if done or (len(sub) == 1 and (added or fill_bar)):
+                continue
+            d = manage_position(p.side, p.first_entry, p.stop, p.initial_stop, row["close"],
+                                p.best, row["atr"], i - p.opened_i, cfg)
+            if d.new_stop is not None:
+                p.stop = d.new_stop
+            if d.close:
+                close_pos(sym, row["close"], ts, d.reason, i)
 
         # 3) equity, daily loss limit
         upnl = 0.0

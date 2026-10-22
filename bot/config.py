@@ -82,6 +82,9 @@ class Config:
     max_open_positions: int = 2
     entry_order: str = "market"      # "market" or "maker" (post-only limit, lower fee)
     maker_timeout_seconds: int = 60  # cancel an unfilled maker entry after this long
+    # take-profit as a resting limit order (maker fee, no slippage) instead of the exchange's
+    # trigger-market take-profit; backtest only for now, live still uses the trigger
+    tp_order: str = "market"
     whole_price_coins: list[str] = field(default_factory=lambda: ["BTC", "ETH"])  # no decimals
     risk: RiskConfig = field(default_factory=RiskConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
@@ -116,6 +119,8 @@ def validate(cfg: Config) -> None:
         raise ValueError("account_type must be auto, classic or unified")
     if cfg.entry_order not in ("market", "maker"):
         raise ValueError("entry_order must be market or maker")
+    if cfg.tp_order not in ("market", "maker"):
+        raise ValueError("tp_order must be market or maker")
     if cfg.margin_mode not in ("isolated", "cross"):
         raise ValueError("margin_mode must be isolated or cross")
     if not 0 < cfg.min_margin_usd <= cfg.max_margin_usd:
