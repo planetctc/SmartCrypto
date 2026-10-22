@@ -109,7 +109,8 @@ class RiskManager:
         self.state.trades_today += 1
         if pnl < 0:
             self.state.consecutive_losses += 1
-            if self.state.consecutive_losses >= self.r.max_consecutive_losses:
+            if self.r.max_consecutive_losses and \
+                    self.state.consecutive_losses >= self.r.max_consecutive_losses:  # 0 = never pause
                 self.state.paused_until_ms = now_ms + self.r.pause_after_losses_minutes * MS_PER_MIN
                 self.state.consecutive_losses = 0
         else:

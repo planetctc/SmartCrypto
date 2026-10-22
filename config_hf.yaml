@@ -33,6 +33,7 @@ margin_mode: cross      # 全仓：整个账户一起扛，爆仓价离得远，
 min_margin_usd: 5      # 每单最少保证金（信号一般时）
 max_margin_usd: 15     # 每单最多保证金（信号强时）
 max_open_positions: 1  # 同时只开一单
+replace_on_new_signal: true  # 宁杀错不放过：别的币出新信号时，手上那单还没保本就平掉换新单
 
 # 进场方式:
 #   market = 市价单，马上成交，手续费 0.06%
@@ -51,9 +52,9 @@ risk:
   min_stop_pct: 0.0030         # 止损距离最小 0.3%（ETH 约 7 点，BTC 约 250 美金，太近会被正常波动打掉）
   liq_buffer_pct: 0.0008       # 止损价至少要比爆仓价早 0.08%
   maintenance_margin_rate: 0.005  # 维持保证金率（估算爆仓价用，偏保守）
-  max_consecutive_losses: 4    # 连续亏 4 单就暂停
+  max_consecutive_losses: 0    # 连续亏几单就暂停（0 = 不暂停，靠一天亏 30% 停止来保护）
   pause_after_losses_minutes: 120  # 暂停 2 小时
-  cooldown_bars_after_stop: 6  # 某个币止损后，等 6 根 K 线再在这个币上开单
+  cooldown_bars_after_stop: 2  # 某个币止损后，等 2 根 K 线（30 分钟）再在这个币上开单
   max_trades_per_day: 40       # 每天最多开几单（防止手续费失控）
 
 # ---------------- 策略参数 ----------------
@@ -74,7 +75,7 @@ strategy:
   atr_stop_mult: 1.0       # 止损 = 1 倍 ATR（再受上面的最大/最小止损限制）
   breakeven_at_r: 1.0      # 赚到 1 倍止损距离后，把止损移到成本，之后开始跟踪
   trail_atr_mult: 1.5      # 之后用 1.5 倍 ATR 跟踪止损锁利润
-  max_hold_bars: 48        # 最多持有 48 根 K 线（15 分钟 × 48 = 12 小时），已经保本的单不限时
+  max_hold_bars: 8         # 没保本的单最多拿 8 根 K 线（15 分钟 × 8 = 2 小时）就平掉，已经保本的单不限时
 
   # 视频的做法（分批进场、补仓、分批止盈、避开整数关口）先放一边，现在是一次开满、一个止盈
   scale_in_frac: 1.0          # 第一批占计划仓位的比例（1 = 一次开满）

@@ -254,7 +254,7 @@ class Engine:
         t = self.trades.pop(sym, None)
         pnl = sign * (fill - p.entry) * p.qty - fees + (t.realized if t else 0.0)
         log.info("CLOSE %s %s qty=%s @ %.10g (%s) pnl≈%.2f", sym, p.side, p.qty, fill, why, pnl)
-        stopped = pnl < 0 and why != "max hold time"
+        stopped = pnl < 0 and why not in ("max hold time", "replaced by new signal")
         self.risk.record_close(now, sym, pnl, stopped, self.tf_ms)
 
     def _refresh_bars(self, sym: str, now: int, positions: dict[str, Position]) -> None:
@@ -276,10 +276,38 @@ class Engine:
         if sig:
             self._try_open(sym, sig, now, positions)
 
+    def _make_room(self, sym: str, now: int, positions: dict[str, Position], equity: float) -> int:
+        """replace_on_new_signal: free slots for a new signal on `sym` by cancelling other
+        coins' waiting limit entries and closing their trades that are not yet protected
+        (stop still below break-even). Returns how many slots were freed. Does nothing if
+        the new trade would be refused anyway (daily limit, pause, cooldown...)."""
+        others = [s for s in self.pending if s != sym]
+        for s in positions.keys() | self.trades.keys():
+            t = self.trades.get(s)
+            if s == sym or t is None:
+                continue
+            sign = 1 if t.side == "long" else -1
+            if sign * (t.stop - t.entry) < 0:
+                others.append(s)
+        busy = len(positions.keys() | self.trades.keys()) + len(self.pending)
+        if not others or not self.risk.can_open(now, sym, busy - len(others), equity)[0]:
+            return 0
+        for s in others:
+            if s in self.pending:
+                self._cancel_pending(s, now, positions)
+            elif s in positions:
+                log.info("%s new signal on %s: closing %s to take it", s, sym, s)
+                self._close(s, positions.pop(s), now, "replaced by new signal")
+            else:
+                self.trades.pop(s, None)
+        return len(others)
+
     def _try_open(self, sym, sig, now, positions) -> None:
         equity, free = self._balance()
         # positions was read at the start of this loop: count trades opened since then too
         busy = len(positions.keys() | self.trades.keys()) + len(self.pending)
+        if self.cfg.replace_on_new_signal and busy >= self.cfg.max_open_positions:
+            busy -= self._make_room(sym, now, positions, equity)
         ok, why = self.risk.can_open(now, sym, busy, equity)
         if not ok:
             log.info("%s signal skipped: %s", sym, why)

@@ -847,3 +847,40 @@ def test_selftest_refuses_when_coin_already_has_a_position():
     b.pos["BTC/USDT:USDT"] = Position("BTC/USDT:USDT", "long", 1, 1, 0, 0, 1)
     res = run_selftest(b, "BTC/USDT:USDT", 10, pause=0)
     assert len(res) == 1 and not res[0][1] and "setup" not in b.calls
+
+
+def _replace_engine(tmp_path, protected):
+    from bot.engine import Trade
+    c = cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    c.max_open_positions, c.replace_on_new_signal = 1, True
+    b = FakeBroker(_df_ending_in_signal(c))
+    e = Engine(c, b)
+    old = "ETH/USDT:USDT"
+    b.pos[old] = Position(old, "long", 1, 3000, 2970, 0, 30)
+    stop = 3001 if protected else 2990
+    e.trades[old] = Trade("long", 1, 3000, 2990, stop, 3020, 3000, b.now)
+    return c, b, e, old
+
+
+def test_new_signal_replaces_trade_that_is_not_yet_protected(tmp_path):
+    c, b, e, old = _replace_engine(tmp_path, protected=False)
+    e.step()
+    assert old in b.closed and old not in e.trades
+    assert [o[0] for o in b.opened] == ["BTC/USDT:USDT"]
+    assert e.risk.state.cooldown_until_ms.get(old, 0) == 0  # a swap is not a stop-out
+
+
+def test_new_signal_keeps_trade_already_at_break_even(tmp_path):
+    c, b, e, old = _replace_engine(tmp_path, protected=True)
+    e.step()
+    assert old not in b.closed and not b.opened
+
+
+def test_zero_consecutive_losses_means_never_pause():
+    c = cfg()
+    c.risk.max_consecutive_losses = 0
+    rm = RiskManager(c)
+    for i in range(10):
+        rm.record_close(i, "BTC/USDT:USDT", -1.0, False, 60_000)
+    assert rm.state.paused_until_ms == 0

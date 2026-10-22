@@ -157,7 +157,8 @@ def parse_stats(lines: list[str], today: str) -> Stats:
 
 
 REASONS = {"managed stop hit": "跟踪止损", "max hold time": "持仓超时", "risk stop": "风控全部平仓",
-           "liq safety": "爆仓保护"}
+           "liq safety": "爆仓保护", "replaced by new signal": "换成新信号",
+           "take-profit": "止盈"}
 SKIPS = {"daily loss limit": "今天已亏到上限", "consecutive losses": "连亏暂停中",
          "cooling down": "刚止损，冷却中", "max open positions": "同时持仓已满",
          "trades per day": "今天单数已满", "price already ran": "价格已经跑远",
@@ -200,6 +201,8 @@ def _friendly(line: str) -> str:
     if r := re.match(r"PLAN (\S+) add=(\S+) @ (\S+) take-profits=(\S+)", msg):
         add = f"到 {r[3]} 补仓，" if float(r[2]) > 0 else ""
         return f"{t}  {coin(r[1])} 计划：{add}分批止盈 {r[4].replace('/', ' / ')}"
+    if r := re.match(r"(\S+) new signal on (\S+): closing", msg):
+        return f"{t}  {coin(r[2])} 出新信号，{coin(r[1])} 还没保本，平掉换新单"
     if r := re.match(r"TP-LIMIT (\S+) \S+ qty=\S+ @ (\S+)", msg):
         return f"{t}  {coin(r[1])} 止盈挂单已挂好 @ {r[2]}"
     if r := re.match(r"(\S+) limit take-profit not placed .* close at (\S+) itself", msg):
