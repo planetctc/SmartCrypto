@@ -288,11 +288,9 @@ class Engine:
             self._try_open(sym, sig, now, positions)
         return trend, sig is not None
 
-    def _make_room(self, sym: str, now: int, positions: dict[str, Position], equity: float) -> int:
-        """replace_on_new_signal: free slots for a new signal on `sym` by cancelling other
-        coins' waiting limit entries and closing their trades that are not yet protected
-        (stop still below break-even). Returns how many slots were freed. Does nothing if
-        the new trade would be refused anyway (daily limit, pause, cooldown...)."""
+    def _replaceable(self, sym: str, positions: dict[str, Position]) -> list[str]:
+        """replace_on_new_signal: other coins' waiting limit entries and trades whose stop is
+        not yet at break-even. A new signal on `sym` may take their place."""
         others = [s for s in self.pending if s != sym]
         for s in positions.keys() | self.trades.keys():
             t = self.trades.get(s)
@@ -301,9 +299,10 @@ class Engine:
             sign = 1 if t.side == "long" else -1
             if sign * (t.stop - t.entry) < 0:
                 others.append(s)
-        busy = len(positions.keys() | self.trades.keys()) + len(self.pending)
-        if not others or not self.risk.can_open(now, sym, busy - len(others), equity)[0]:
-            return 0
+        return others
+
+    def _swap_out(self, others: list[str], sym: str, now: int,
+                  positions: dict[str, Position]) -> None:
         fresh = None
         for s in others:
             if s in self.pending:
@@ -319,15 +318,14 @@ class Engine:
                 self._close(s, positions.pop(s), now, "replaced by new signal")
             else:
                 self._cancel_tp(s, self.trades.pop(s, None))
-        return len(others)
 
     def _try_open(self, sym, sig, now, positions) -> None:
         equity, free = self._balance()
         # positions was read at the start of this loop: count trades opened since then too
         busy = len(positions.keys() | self.trades.keys()) + len(self.pending)
-        if self.cfg.replace_on_new_signal and busy >= self.cfg.max_open_positions:
-            busy -= self._make_room(sym, now, positions, equity)
-        ok, why = self.risk.can_open(now, sym, busy, equity)
+        swap = self._replaceable(sym, positions) \
+            if self.cfg.replace_on_new_signal and busy >= self.cfg.max_open_positions else []
+        ok, why = self.risk.can_open(now, sym, busy - len(swap), equity)
         if not ok:
             log.info("%s signal skipped: %s", sym, why)
             return
@@ -361,6 +359,8 @@ class Engine:
                  "add_plan": add, "tps": tps[:-1],
                  "tp_qtys": [self.broker.round_qty(sym, qty * f) for f in s.take_profit_split]}
         margin = sizing.margin * qty / sizing.qty
+        if swap:  # only now that the new trade is certain to be placed
+            self._swap_out(swap, sym, now, positions)
 
         exch_tp = 0.0 if self.limit_tp else tp  # 0 = no trigger TP, a limit order goes in after
         if maker:

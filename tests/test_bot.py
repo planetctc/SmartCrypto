@@ -914,3 +914,10 @@ def test_cancel_of_already_gone_order_is_not_an_error():
             raise ccxt.ExchangeError('bitget {"code":"25204","msg":"Order does not exist"}')
     br.ex = Ex()
     br.cancel_order("BTC/USDT:USDT", "123")  # must not raise
+
+
+def test_old_trade_is_kept_when_the_new_signal_is_refused_by_sizing(tmp_path):
+    c, b, e, old = _replace_engine(tmp_path, protected=False)
+    c.risk.max_stop_pct = c.risk.min_stop_pct * 1.0001  # every new stop is "too wide"
+    e.step()
+    assert old not in b.closed and old in e.trades and not b.opened
