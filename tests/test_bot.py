@@ -859,7 +859,7 @@ def _replace_engine(tmp_path, protected):
     old = "ETH/USDT:USDT"
     b.pos[old] = Position(old, "long", 1, 3000, 2970, 0, 30)
     stop = 3001 if protected else 2990
-    e.trades[old] = Trade("long", 1, 3000, 2990, stop, 3020, 3000, b.now)
+    e.trades[old] = Trade("long", 1, 3000, 2990, stop, 3020, 3000, b.now - 2 * 300_000)
     return c, b, e, old
 
 
@@ -893,7 +893,7 @@ def test_high_frequency_mode_never_waits_after_a_stop():
     assert rm.can_open(1_000, "BTC/USDT:USDT", 0, 100)[0]
 
 
-def test_replace_in_same_loop_closes_the_trade_opened_moments_ago(tmp_path):
+def test_trade_opened_this_bar_is_not_swapped_out(tmp_path):
     c = cfg()
     c.symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
     c.state_file, c.max_open_positions, c.replace_on_new_signal = str(tmp_path / "s.json"), 1, True
@@ -901,7 +901,14 @@ def test_replace_in_same_loop_closes_the_trade_opened_moments_ago(tmp_path):
     e = Engine(c, b)
     e.step()
     assert len(b.pos) == 1 and set(e.trades) == set(b.pos)
-    assert len(b.closed) == 2  # the first two were swapped out, not left untracked
+    assert not b.closed  # first signal wins; no ping-pong within one bar
+
+
+def test_fresh_trade_from_earlier_loop_is_not_swapped_out(tmp_path):
+    c, b, e, old = _replace_engine(tmp_path, protected=False)
+    e.trades[old].opened_ms = b.now
+    e.step()
+    assert old not in b.closed and old in e.trades and not b.opened
 
 
 def test_cancel_of_already_gone_order_is_not_an_error():

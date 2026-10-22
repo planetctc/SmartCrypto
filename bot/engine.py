@@ -291,11 +291,12 @@ class Engine:
     def _replaceable(self, sym: str, positions: dict[str, Position]) -> list[str]:
         """replace_on_new_signal: other coins' waiting limit entries and trades whose stop is
         not yet at break-even. A new signal on `sym` may take their place."""
+        now = self.broker.now_ms()
         others = [s for s in self.pending if s != sym]
         for s in positions.keys() | self.trades.keys():
             t = self.trades.get(s)
-            if s == sym or t is None:
-                continue
+            if s == sym or t is None or now - t.opened_ms < self.tf_ms:
+                continue  # a trade opened on this bar gets at least one bar before a swap
             sign = 1 if t.side == "long" else -1
             if sign * (t.stop - t.entry) < 0:
                 others.append(s)
