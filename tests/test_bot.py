@@ -243,10 +243,10 @@ def test_engine_flattens_everything_on_daily_loss(tmp_path):
 # ---------- high-frequency mode ----------
 def test_hf_config_loads():
     c = load_config(ROOT / "config_hf.yaml")
-    assert (c.timeframe, c.trend_timeframe, c.entry_order, c.tp_order) == ("5m", "1h", "maker", "maker")
+    assert (c.timeframe, c.trend_timeframe, c.entry_order, c.tp_order) == ("1m", "15m", "maker", "maker")
     assert not c.replace_on_new_signal and c.max_open_positions == 8
     assert c.strategy.take_profit_r == [1.0]
-    assert c.risk.max_trades_per_day == 40 and c.risk.daily_max_loss_pct == 0.30
+    assert c.risk.max_trades_per_day == 200 and c.risk.daily_max_loss_pct == 0.30
     assert (c.leverage, c.min_margin_usd, c.max_margin_usd) == (100, 5, 15)
 
 

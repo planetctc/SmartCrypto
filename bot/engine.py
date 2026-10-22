@@ -37,6 +37,7 @@ class Trade:
     add_qty: float = 0.0      # qty of the second batch that is open now
     add_fill: float = 0.0
     add_state: str = ""       # "" = waiting, "open" = 补仓 done, "done" = 平加仓 done
+    reason: str = ""          # why it was opened (signal kind), for the trade journal
     tps: list = field(default_factory=list)      # 分批止盈 levels still to hit (exchange has the last)
     tp_qtys: list = field(default_factory=list)  # qty to close at each of those levels
     realized: float = 0.0     # profit already taken from partial closes
@@ -259,10 +260,10 @@ class Engine:
             pnl = sign * (px - avg) * t.qty - fees + t.realized
             log.info("%s position gone (exchange stop/TP), approx pnl %.2f", sym, pnl)
             self.risk.record_close(now, sym, pnl, pnl < 0, self.tf_ms)
-            self._journal(sym, t.side, avg, px, "exchange stop/TP", pnl, t.opened_ms, now)
+            self._journal(sym, t.side, avg, px, "exchange stop/TP", pnl, t.opened_ms, now, t.reason)
 
     def _journal(self, sym: str, side: str, entry: float, exit_: float, why: str, pnl: float,
-                 opened_ms: int, now: int) -> None:
+                 opened_ms: int, now: int, reason: str = "") -> None:
         """Every closed live trade, one row in data/trades.csv, for the daily review."""
         path = self.state_path.parent / "trades.csv"
         new = not path.exists()
@@ -272,10 +273,10 @@ class Engine:
                 w = csv.writer(f)
                 if new:
                     w.writerow(["closed_utc", "coin", "side", "entry", "exit", "why", "pnl",
-                                "minutes"])
+                                "minutes", "signal"])
                 w.writerow([datetime.fromtimestamp(now / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M"),
                             sym.split("/")[0], side, f"{entry:.10g}", f"{exit_:.10g}", why,
-                            f"{pnl:.2f}", round((now - opened_ms) / 60_000)])
+                            f"{pnl:.2f}", round((now - opened_ms) / 60_000), reason])
         except OSError as e:
             log.warning("trade journal not written: %s", e)
         today = self.risk.state
@@ -295,7 +296,8 @@ class Engine:
         log.info("CLOSE %s %s qty=%s @ %.10g (%s) pnl≈%.2f", sym, p.side, p.qty, fill, why, pnl)
         stopped = pnl < 0 and why not in ("max hold time", "replaced by new signal")
         self.risk.record_close(now, sym, pnl, stopped, self.tf_ms)
-        self._journal(sym, p.side, p.entry, fill, why, pnl, t.opened_ms if t else now, now)
+        self._journal(sym, p.side, p.entry, fill, why, pnl, t.opened_ms if t else now, now,
+                      t.reason if t else "")
 
     def _refresh_bars(self, sym: str, now: int,
                       positions: dict[str, Position]) -> tuple[int, bool] | None:
@@ -417,7 +419,8 @@ class Engine:
         add = self.broker.round_qty(sym, sizing.qty - qty) if scales_in(self.cfg) else 0.0
         extra = {"add_price": self._round(sym, plan.add_price, sig.side) if add > 0 else 0.0,
                  "add_plan": add, "tps": tps[:-1],
-                 "tp_qtys": [self.broker.round_qty(sym, qty * f) for f in s.take_profit_split]}
+                 "tp_qtys": [self.broker.round_qty(sym, qty * f) for f in s.take_profit_split],
+                 "reason": sig.reason}
         margin = sizing.margin * qty / sizing.qty
         if swap:  # only now that the new trade is certain to be placed
             self._swap_out(swap, sym, now, positions)
