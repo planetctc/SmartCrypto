@@ -168,6 +168,11 @@ def off_round(price: float, side: str, kind: str) -> float:
     return level - sign * 0.35 * step
 
 
+def scales_in(cfg: Config) -> bool:
+    """True when a trade keeps part of its size back for a 补仓."""
+    return cfg.strategy.scale_in_frac < 1 and cfg.strategy.scale_in_at_r > 0
+
+
 @dataclass
 class TradePlan:
     stop: float
@@ -188,5 +193,5 @@ def trade_plan(side: str, entry: float, stop_dist: float, cfg: Config) -> TradeP
             nice = off_round(tp, side, "tp")
             moved.append(nice if not moved or sign * (nice - moved[-1]) > 0 else tp)
         tps = moved
-    add = entry - sign * stop_dist * s.scale_in_at_r if s.scale_in_frac < 1 else entry
+    add = entry - sign * stop_dist * s.scale_in_at_r if scales_in(cfg) else entry
     return TradePlan(stop, add, tps)

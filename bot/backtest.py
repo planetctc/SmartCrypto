@@ -13,7 +13,7 @@ import pandas as pd
 
 from .config import Config
 from .risk import RiskManager, effective_leverage, liquidation_price
-from .strategy import TF_MS, manage_position, prepare, signal_at, trade_plan
+from .strategy import TF_MS, manage_position, prepare, scales_in, signal_at, trade_plan
 
 
 def resample(df: pd.DataFrame, tf: str) -> pd.DataFrame:
@@ -183,8 +183,9 @@ def run_backtest(cfg: Config, frames: dict[str, pd.DataFrame], start_balance: fl
                                                                   cfg.leverage),
                                                cfg.risk.maintenance_margin_rate),
                              sizing.margin * st.scale_in_frac, entry_fee * fill * qty, i, ts,
-                             fill, plan.add_price if st.scale_in_frac < 1 else 0.0,
-                             sizing.qty - qty, tps=plan.take_profits[:-1],
+                             fill, plan.add_price if scales_in(cfg) else 0.0,
+                             sizing.qty - qty if scales_in(cfg) else 0.0,
+                             tps=plan.take_profits[:-1],
                              tp_qtys=[qty * f for f in st.take_profit_split],
                              planned_margin=sizing.margin)
 

@@ -36,7 +36,7 @@ class StrategyConfig:
     max_hold_bars: int = 48
     # 分批进场: first batch now, 补仓 (second batch) if price first goes scale_in_at_r against us
     scale_in_frac: float = 0.5                 # first batch share of the planned size (1 = all at once)
-    scale_in_at_r: float = 0.5
+    scale_in_at_r: float = 0.5                 # 0 = no 补仓: trade the first batch only
     # 分批止盈: take-profit levels in multiples of the stop distance; the last one sits on the
     # exchange, the earlier ones each close take_profit_split of the first batch
     take_profit_r: list[float] = field(default_factory=lambda: [1.2, 2.0, 3.0])
@@ -113,8 +113,8 @@ def validate(cfg: Config) -> None:
     if not 0 < r.min_stop_pct < r.max_stop_pct:
         raise ValueError("need 0 < risk.min_stop_pct < risk.max_stop_pct")
     s = cfg.strategy
-    if not 0 < s.scale_in_frac <= 1 or s.scale_in_at_r <= 0:
-        raise ValueError("need 0 < strategy.scale_in_frac <= 1 and scale_in_at_r > 0")
+    if not 0 < s.scale_in_frac <= 1 or s.scale_in_at_r < 0:
+        raise ValueError("need 0 < strategy.scale_in_frac <= 1 and scale_in_at_r >= 0")
     if not s.take_profit_r or s.take_profit_r != sorted(s.take_profit_r) or s.take_profit_r[0] <= 0:
         raise ValueError("strategy.take_profit_r must be rising positive numbers")
     if len(s.take_profit_split) != len(s.take_profit_r) - 1 or sum(s.take_profit_split) >= 1:

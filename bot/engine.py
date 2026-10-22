@@ -11,7 +11,7 @@ from pathlib import Path
 from .config import Config
 from .exchange import Position
 from .risk import RiskManager, RiskState
-from .strategy import TF_MS, manage_position, prepare, signal_at, trade_plan
+from .strategy import TF_MS, manage_position, prepare, scales_in, signal_at, trade_plan
 
 log = logging.getLogger("bot.engine")
 
@@ -284,7 +284,7 @@ class Engine:
         if qty <= 0:
             log.info("%s signal skipped: size below exchange minimum", sym)
             return
-        add = self.broker.round_qty(sym, sizing.qty - qty) if s.scale_in_frac < 1 else 0.0
+        add = self.broker.round_qty(sym, sizing.qty - qty) if scales_in(self.cfg) else 0.0
         extra = {"add_price": self._round(sym, plan.add_price, sig.side) if add > 0 else 0.0,
                  "add_plan": add, "tps": tps[:-1],
                  "tp_qtys": [self.broker.round_qty(sym, qty * f) for f in s.take_profit_split]}

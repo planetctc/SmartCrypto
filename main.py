@@ -96,6 +96,62 @@ def cmd_compare(_, args):
         f"{round(results[p]['trades'] / days[p], 1):>{w}}" for p in results))
 
 
+TUNE_VARIANTS = [
+    ("现在的设置", {}),
+    ("关掉补仓", {"scale_in_at_r": 0}),
+    ("补仓拉远到 0.8 倍", {"scale_in_at_r": 0.8}),
+    ("一次开满，不分批", {"scale_in_frac": 1.0}),
+    ("关掉补仓 + 持仓不限时", {"scale_in_at_r": 0, "max_hold_bars": 10**9}),
+]
+
+
+def cmd_tune(cfg, args):
+    """Download recent real candles and backtest a few strategy variants side by side.
+    This is what the control panel's 回测比较 button runs."""
+    import copy
+
+    from bot.backtest import run_backtest
+    from bot.data import download, load_csv
+    out = Path(args.data_dir)
+    out.mkdir(exist_ok=True)
+    progress = out / "tune_progress.txt"
+
+    def say(msg):
+        print(msg)
+        progress.write_text(msg, encoding="utf-8")
+
+    frames = {}
+    for i, sym in enumerate(cfg.symbols, 1):
+        say(f"下载 {sym.split('/')[0]} 最近 {args.days} 天的 K 线（{i}/{len(cfg.symbols)}）…")
+        frames[sym] = load_csv(download(sym, cfg.timeframe, args.days, args.exchange, args.data_dir))
+    rows = []
+    for i, (name, change) in enumerate(TUNE_VARIANTS, 1):
+        say(f"回测 {i}/{len(TUNE_VARIANTS)}：{name}…")
+        c = copy.deepcopy(cfg)
+        c.risk.min_equity_stop_usd = 0  # run the whole period so every variant is compared fully
+        for k, v in change.items():
+            setattr(c.strategy, k, v)
+        stats, _, _ = run_backtest(c, frames, args.balance)
+        rows.append((name, stats))
+    span = max(f["ts"].iloc[-1] - f["ts"].iloc[0] for f in frames.values()) / 86_400_000
+    coins = "、".join(s.split("/")[0] for s in cfg.symbols)
+    lines = [f"{coins}，{'高频' if cfg.timeframe == '1m' else '普通'}模式，最近 {span:.0f} 天真实 K 线，"
+             f"本金 {args.balance:.0f} USDT，每单保证金 {cfg.max_margin_usd:g}",
+             "已扣手续费。回测只是参考，不保证以后一样。", ""]
+    rows.sort(key=lambda r: -r[1]["end_equity"])
+    for rank, (name, st) in enumerate(rows, 1):
+        net, n = st["end_equity"] - args.balance, st["trades"]
+        lines += [f"{rank}. {name}" + ("  ← 最好" if rank == 1 else ""),
+                  f"   净赚 {net:+.2f} USDT（{st['return_pct']:+.1f}%），最大回撤 "
+                  f"{st.get('max_drawdown_pct', 0):.1f}%",
+                  f"   {n} 单，每天 {n / max(span, 1e-9):.1f} 单，胜率 {st.get('win_rate_pct', 0):.0f}%，"
+                  f"平均每单 {net / n if n else 0:+.2f} USDT", ""]
+    report = "\n".join(lines)
+    (out / "tune_report.txt").write_text(report, encoding="utf-8")
+    say("完成")
+    print("\n" + report)
+
+
 def write_pid_file(cfg):
     """Lets stop_bot.bat find and stop a bot running in the background."""
     import atexit
@@ -149,7 +205,7 @@ def main():
     force_utf8_output()
     from bot.config import load_config
     ap = argparse.ArgumentParser(description="SmartCrypto Bitget futures bot")
-    ap.add_argument("command", choices=["download", "backtest", "compare", "run"])
+    ap.add_argument("command", choices=["download", "backtest", "compare", "tune", "run"])
     ap.add_argument("--configs", nargs="+", default=["config.yaml", "config_hf.yaml"],
                     help="compare 用的配置文件")
     ap.add_argument("--config", default="config.yaml")
@@ -163,10 +219,11 @@ def main():
     args = ap.parse_args()
     cfg = load_config(args.config)
     apply_overrides(cfg, args.coins, args.margin)
-    setup_logging(cfg.log_file)
+    # only the trading bot writes the bot log the panel shows
+    setup_logging(cfg.log_file if args.command == "run" else str(Path(args.data_dir) / "tools.log"))
     print(BANNER)
     {"download": cmd_download, "backtest": cmd_backtest, "compare": cmd_compare,
-     "run": cmd_run}[args.command](cfg, args)
+     "tune": cmd_tune, "run": cmd_run}[args.command](cfg, args)
 
 
 if __name__ == "__main__":

@@ -65,6 +65,11 @@ def run_command(config_file: str, coins: list[str], margin: float) -> list[str]:
             "--coins", ",".join(coins), "--margin", f"{margin:g}"]
 
 
+def tune_command(config_file: str, coins: list[str], margin: float, days: int = 30) -> list[str]:
+    return [sys.executable, str(ROOT / "main.py"), "tune", "--config", config_file,
+            "--coins", ",".join(coins), "--margin", f"{margin:g}", "--days", str(days)]
+
+
 def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -256,6 +261,7 @@ class Panel(tk.Tk):
         self.minsize(720, 520)
         self.font = "Microsoft YaHei UI" if IS_WIN else "WenQuanYi Zen Hei"
         self.proc: subprocess.Popen | None = None
+        self.tune_proc: subprocess.Popen | None = None
         self.mode = tk.StringVar(value="高频模式")
         self.raw = tk.BooleanVar(value=False)
         st = load_settings()
@@ -309,6 +315,8 @@ class Panel(tk.Tk):
         self.stop_btn = self._button(ctrl, "■  停止", RED, self.stop)
         self.stop_btn.pack(side="left", padx=4)
         self._button(ctrl, "设置 API key", "#334155", self.key_dialog).pack(side="right")
+        self.tune_btn = self._button(ctrl, "回测比较", BLUE, self.tune)
+        self.tune_btn.pack(side="right", padx=(0, 8))
         self.key_label = self._label(ctrl, "", 10, MUTED)
         self.key_label.pack(side="right", padx=8)
 
@@ -414,6 +422,7 @@ class Panel(tk.Tk):
             self.show_log(lines[-300:])
         if getattr(self, "_job", None):
             self.after_cancel(self._job)
+        self.check_tune()
         self._job = self.after(1500, self.refresh)
 
     def refresh_log(self):
@@ -506,6 +515,50 @@ class Panel(tk.Tk):
         self.proc = None  # stopped on purpose: check_started must not report a failure
         pid_file.unlink(missing_ok=True)
         self.after(500, lambda: self.refresh(force_log=True))
+
+    def tune(self):
+        """回测比较: download recent real candles and compare a few ways of trading."""
+        if self.tune_proc is not None:
+            return
+        coins, margin = self.choices()
+        if not coins or margin is None:
+            messagebox.showwarning("SmartCrypto", "先勾选币种，并把每单保证金设在 5–15 之间。")
+            return
+        data = ROOT / "data"
+        data.mkdir(exist_ok=True)
+        (data / "tune_progress.txt").write_text("开始…", encoding="utf-8")
+        err = open(data / "tune_errors.log", "w", encoding="utf-8")
+        self.tune_proc = subprocess.Popen(
+            tune_command(MODES[self.mode.get()], coins, margin), cwd=str(ROOT),
+            env=dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8"),
+            stdout=subprocess.DEVNULL, stderr=err, creationflags=NO_WINDOW)
+
+    def check_tune(self):
+        if self.tune_proc is None:
+            self.tune_btn.configure(text="回测比较", state="normal")
+            return
+        if self.tune_proc.poll() is None:
+            try:
+                msg = (ROOT / "data" / "tune_progress.txt").read_text(encoding="utf-8")
+            except OSError:
+                msg = "回测中…"
+            self.tune_btn.configure(text=msg[:28], state="disabled")
+            return
+        code, self.tune_proc = self.tune_proc.returncode, None
+        self.tune_btn.configure(text="回测比较", state="normal")
+        if code != 0:
+            errs = tail(ROOT / "data" / "tune_errors.log")[-8:]
+            messagebox.showerror("回测失败", "回测没有完成：\n\n" + "\n".join(errs))
+            return
+        report = (ROOT / "data" / "tune_report.txt").read_text(encoding="utf-8")
+        win = tk.Toplevel(self, bg=BG)
+        win.title("回测比较")
+        win.geometry("620x560")
+        box = tk.Text(win, bg=CARD, fg=FG, relief="flat", wrap="word", padx=12, pady=10,
+                      font=(self.font, 11))
+        box.insert("1.0", report)
+        box.configure(state="disabled")
+        box.pack(fill="both", expand=True, padx=12, pady=12)
 
     def key_dialog(self):
         d = tk.Toplevel(self, bg=BG, padx=16, pady=12)

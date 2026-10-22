@@ -25,6 +25,12 @@ def download(symbol: str, tf: str, days: int, exchange: str = "bitget",
     step = TF_MS[tf]
     now = ex.milliseconds()
     since = now - days * 86_400_000
+    out = csv_path(data_dir, exchange, symbol, tf)
+    old = pd.read_csv(out) if out.exists() else None
+    if old is not None and len(old) and old["ts"].iloc[0] <= since + 86_400_000:
+        since = int(old["ts"].iloc[-1]) + step  # already have the start: only fetch what is new
+    else:
+        old = None
     rows: list[list] = []
     while since < now - step:
         batch = ex.fetch_ohlcv(symbol, tf, since, 200)
@@ -39,9 +45,10 @@ def download(symbol: str, tf: str, days: int, exchange: str = "bitget",
         since = nxt
         time.sleep(ex.rateLimit / 1000)
     df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
+    if old is not None:
+        df = pd.concat([old, df])
     df = df.drop_duplicates("ts").sort_values("ts")
-    df = df[df["ts"] + step <= now]
-    out = csv_path(data_dir, exchange, symbol, tf)
+    df = df[(df["ts"] + step <= now) & (df["ts"] >= now - days * 86_400_000)]
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out, index=False)
     log.info("saved %d bars to %s", len(df), out)
