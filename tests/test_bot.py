@@ -1042,3 +1042,16 @@ def test_signal_against_the_order_flow_is_not_opened(tmp_path):
     c.state_file = str(tmp_path / "s3.json")
     Engine(c, b3).step()
     assert b3.opened
+
+
+def test_combo_takes_rejected_bounce_into_fast_average_in_a_downtrend():
+    import pandas as pd
+    from bot.strategy import _side
+    c = cfg()
+    c.strategy.signal_type = "combo"
+    row = pd.Series({"close": 99.0, "open": 99.5, "high": 100.5, "low": 98.8, "atr": 1.0,
+                     "trend": -1, "hh": 103.0, "ll": 97.0, "ema_fast": 100.0})
+    assert _side(row, c)[0] == "short"
+    c.strategy.signal_type = "breakout"
+    assert _side(row, c) is None
+    assert load_config(ROOT / "config_hf.yaml").strategy.signal_type == "combo"

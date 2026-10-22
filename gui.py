@@ -218,7 +218,7 @@ def _friendly(line: str) -> str:
     if r := re.match(r"no futures market for (\S+) on Bitget", msg):
         return f"{t}  {coin(r[1])} Bitget 没有合约，跳过"
     if r := re.match(r"cancel \S+ on (\S+): already gone", msg):
-        return f"{t}  {coin(r[1])} 止盈挂单已经成交"
+        return f"{t}  {coin(r[1])} 止盈挂单已不在（成交或随平仓撤掉）"
     if r := re.match(r"TP-LIMIT (\S+) \S+ qty=\S+ @ (\S+)", msg):
         return f"{t}  {coin(r[1])} 止盈挂单已挂好 @ {r[2]}"
     if r := re.match(r"(\S+) limit take-profit not placed .* close at (\S+) itself", msg):

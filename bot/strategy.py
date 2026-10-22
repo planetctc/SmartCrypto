@@ -145,11 +145,20 @@ def _side(row: pd.Series, cfg: Config) -> tuple[str, float] | None:
         if n <= -s.min_score < prev:
             return "short", -n / len(VOTES)
         return None
-    if s.signal_type == "breakout":
+    if s.signal_type in ("breakout", "combo"):
         if trend == 1 and close > row["hh"]:
             return "long", (close - row["hh"]) / a
         if trend == -1 and close < row["ll"]:
             return "short", (row["ll"] - close) / a
+        if s.signal_type == "breakout":
+            return None
+    if s.signal_type == "combo":
+        # not only new highs/lows: in a trend, a bounce into the fast average that gets
+        # rejected (bar pokes through it and closes back on the trend side) is an entry too
+        if trend == 1 and row["low"] <= row["ema_fast"] < close:
+            return "long", 0.5
+        if trend == -1 and row["high"] >= row["ema_fast"] > close:
+            return "short", 0.5
         return None
     if s.signal_type == "pullback":
         # trend up, the bar dipped to the fast average and closed back above it, green
@@ -173,7 +182,7 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
     s, r = cfg.strategy, cfg.risk
     if any(pd.isna(row[c]) for c in ("atr", "hh", "ll", "vol_avg", "trend_ema")):
         return None
-    if row["vol_avg"] <= 0 or (row["trend"] == 0 and s.signal_type in ("breakout", "pullback")):
+    if row["vol_avg"] <= 0 or (row["trend"] == 0 and s.signal_type in ("breakout", "pullback", "combo")):
         return None
     vol_ratio = row["volume"] / row["vol_avg"]
     if vol_ratio < s.volume_factor:
