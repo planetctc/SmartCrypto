@@ -585,8 +585,11 @@ def test_tune_variants_cover_every_signal_and_config_is_valid():
     variants = main.tune_variants()
     assert len(variants) == 18
     assert {v[2]["signal_type"] for v in variants} == set(main.SIGNALS)
-    for _, path, change in variants:
-        c = load_config(ROOT / path)
+    assert {v[1]["entry_order"] for v in variants} == {"market", "maker"}
+    for _, top, change in variants:
+        c = load_config(ROOT / "config.yaml")
+        for k, v in top.items():
+            setattr(c, k, v)
         for k, v in change.items():
             setattr(c.strategy, k, v)
         validate(c)

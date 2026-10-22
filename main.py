@@ -99,16 +99,25 @@ def cmd_compare(_, args):
 SIGNALS = {"breakout": "突破", "pullback": "顺势回踩", "reversion": "超买超卖反转"}
 
 
+TUNE_TIMEFRAMES = (("5 分钟", "5m", "1h"), ("15 分钟", "15m", "4h"), ("1 小时", "1h", "4h"))
+ENTRIES = {"market": "市价进场", "maker": "挂单进场"}
+
+
 def tune_variants():
-    """(name, config file, strategy changes) for every combination the panel compares."""
+    """(name, top-level config changes, strategy changes) for every combination the panel compares.
+
+    The first 90-day run showed 1m loses most and the take-profit multiple barely matters,
+    so this round compares slower timeframes and cheaper limit-order entries instead.
+    """
     out = []
-    for tf, path in (("1 分钟", "config_hf.yaml"), ("5 分钟", "config.yaml")):
+    for tf_name, tf, trend_tf in TUNE_TIMEFRAMES:
         for sig, sig_name in SIGNALS.items():
-            for tp in (1.0, 1.5, 2.0):
-                change = {"signal_type": sig, "take_profit_r": [tp]}
+            for entry, entry_name in ENTRIES.items():
+                change = {"signal_type": sig, "take_profit_r": [2.0]}
                 if sig != "breakout":
                     change["volume_factor"] = 0.0  # volume spikes belong to breakouts
-                out.append((f"{tf}·{sig_name}·止盈 {tp:g} 倍", path, change))
+                top = {"timeframe": tf, "trend_timeframe": trend_tf, "entry_order": entry}
+                out.append((f"{tf_name}·{sig_name}·{entry_name}", top, change))
     return out
 
 
@@ -142,9 +151,11 @@ def cmd_tune(cfg, args):
     balance = 1000.0
     variants = tune_variants()
     rows = []
-    for i, (name, path, change) in enumerate(variants, 1):
+    for i, (name, top, change) in enumerate(variants, 1):
         say(f"回测 {i}/{len(variants)}：{name}…")
-        c = load_config(path)
+        c = load_config("config.yaml")
+        for k, v in top.items():
+            setattr(c, k, v)
         apply_overrides(c, ",".join(s.split("/")[0] for s in cfg.symbols), cfg.max_margin_usd)
         c.risk.min_equity_stop_usd = 0
         c.capital_usd = 0
@@ -156,7 +167,8 @@ def cmd_tune(cfg, args):
         for key, sel in (("train", lambda t: t.open_time < cut), ("test", lambda t: t.open_time >= cut)):
             tr = trades[sel(trades)] if len(trades) else trades
             part[key] = (float(tr.pnl.sum()) if len(tr) else 0.0, len(tr),
-                         float((tr.pnl > 0).mean() * 100) if len(tr) else 0.0)
+                         float((tr.pnl > 0).mean() * 100) if len(tr) else 0.0,
+                         float((tr.pnl + tr.fees).sum()) if len(tr) else 0.0)
         rows.append((name, part))
     day = 86_400_000
     rows.sort(key=lambda r: -r[1]["train"][0])
@@ -166,11 +178,13 @@ def cmd_tune(cfg, args):
              "两段都赚的才算靠得住。回测只是参考，不保证以后一样。", ""]
     good = [r for r in rows if r[1]["train"][0] > 0 and r[1]["test"][0] > 0]
     for rank, (name, part) in enumerate(rows[:8], 1):
-        (a, na, wa), (b, nb, wb) = part["train"], part["test"]
+        (a, na, wa, ga), (b, nb, wb, gb) = part["train"], part["test"]
         mark = "  ✓ 两段都赚" if a > 0 and b > 0 else ""
         lines += [f"{rank}. {name}{mark}",
-                  f"   挑选段：{a:+.2f} USDT，{na} 单，胜率 {wa:.0f}%",
-                  f"   验证段：{b:+.2f} USDT，{nb} 单，胜率 {wb:.0f}%", ""]
+                  f"   挑选段：{a:+.2f} USDT，{na} 单，胜率 {wa:.0f}%（不算手续费 {ga:+.2f}）",
+                  f"   验证段：{b:+.2f} USDT，{nb} 单，胜率 {wb:.0f}%（不算手续费 {gb:+.2f}）", ""]
+    gross = [r[0] for r in rows if r[1]["train"][3] > 0 and r[1]["test"][3] > 0]
+    lines.append("不算手续费两段都赚的：" + ("、".join(gross) if gross else "没有") + "。")
     lines.append(f"结论：{good[0][0]} 两段都赚，可以拿去模拟盘试。" if good else
                  f"结论：{len(rows)} 种组合没有一种在两段都赚，这些信号在这段行情里都没有优势。")
     report = "\n".join(lines)
