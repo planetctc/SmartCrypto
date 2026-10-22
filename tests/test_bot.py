@@ -746,3 +746,39 @@ def test_limit_take_profit_needs_single_entry_and_target():
     c.strategy.take_profit_r, c.strategy.take_profit_split = [1.0, 2.0], [0.5]
     with pytest.raises(ValueError):
         validate(c)
+
+
+class FakeBookEx:
+    def __init__(self):
+        self.now, self.trades = 1_700_000_000_000, []
+
+    def milliseconds(self):
+        return self.now
+
+    def fetch_order_book(self, s, limit):
+        bids = [[100 - i, 1.0] for i in range(limit)]
+        asks = [[101 + i, 2.0] for i in range(limit)]
+        return {"bids": bids, "asks": asks, "timestamp": self.now}
+
+    def fetch_trades(self, s, since, limit):
+        return self.trades[-limit:]
+
+
+def test_order_book_recorder_counts_only_new_trades(tmp_path):
+    from bot.orderflow import COLUMNS, Recorder
+    ex = FakeBookEx()
+    ex.trades = [{"id": "1", "side": "buy", "amount": 5.0, "price": 100.5}]
+    rec = Recorder(ex, ["BTC/USDT:USDT"], tmp_path)
+    rec.poll()  # first poll: trade 1 happened before we started
+    ex.now += 1000
+    ex.trades += [{"id": "2", "side": "buy", "amount": 1.5, "price": 101},
+                  {"id": "3", "side": "sell", "amount": 0.5, "price": 100}]
+    rec.poll()
+    rows = pd.read_csv(rec.path("BTC/USDT:USDT", ex.now))
+    assert list(rows.columns) == COLUMNS and len(rows) == 2
+    first, second = rows.iloc[0], rows.iloc[1]
+    assert first.trades == 0 and second.trades == 2
+    assert second.buy_qty == 1.5 and second.sell_qty == 0.5
+    assert second.bid == 100 and second.ask == 101
+    assert second.bid_qty5 == 5 and second.ask_qty15 == 30
+    assert second.maybe_missed == 0

@@ -262,6 +262,17 @@ def cmd_tune(cfg, args):
     print("\n" + report)
 
 
+def cmd_record(cfg, args):
+    """Record order book + trades (盘口) for the chosen coins until stopped."""
+    import atexit
+    from bot.orderflow import record
+    pid = Path(args.data_dir) / "record.pid"
+    pid.parent.mkdir(parents=True, exist_ok=True)
+    pid.write_text(str(os.getpid()))
+    atexit.register(lambda: pid.unlink(missing_ok=True))
+    record(cfg.symbols, args.data_dir, args.interval)
+
+
 def write_pid_file(cfg):
     """Lets stop_bot.bat find and stop a bot running in the background."""
     import atexit
@@ -315,7 +326,7 @@ def main():
     force_utf8_output()
     from bot.config import load_config
     ap = argparse.ArgumentParser(description="SmartCrypto Bitget futures bot")
-    ap.add_argument("command", choices=["download", "backtest", "compare", "tune", "run"])
+    ap.add_argument("command", choices=["download", "backtest", "compare", "tune", "run", "record"])
     ap.add_argument("--configs", nargs="+", default=["config.yaml", "config_hf.yaml"],
                     help="compare 用的配置文件")
     ap.add_argument("--config", default="config.yaml")
@@ -326,6 +337,7 @@ def main():
     ap.add_argument("--synthetic", action="store_true")
     ap.add_argument("--coins", help="只开这些币，覆盖配置文件，例如 BTC,ETH,SOL")
     ap.add_argument("--margin", type=float, help="每单固定保证金 USDT，覆盖配置文件的 5–15 区间")
+    ap.add_argument("--interval", type=float, default=1.0, help="record: 每隔几秒记录一次盘口")
     args = ap.parse_args()
     cfg = load_config(args.config)
     apply_overrides(cfg, args.coins, args.margin)
@@ -333,7 +345,7 @@ def main():
     setup_logging(cfg.log_file if args.command == "run" else str(Path(args.data_dir) / "tools.log"))
     print(BANNER)
     {"download": cmd_download, "backtest": cmd_backtest, "compare": cmd_compare,
-     "tune": cmd_tune, "run": cmd_run}[args.command](cfg, args)
+     "tune": cmd_tune, "run": cmd_run, "record": cmd_record}[args.command](cfg, args)
 
 
 if __name__ == "__main__":

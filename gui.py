@@ -70,6 +70,13 @@ def tune_command(config_file: str, coins: list[str], margin: float, days: int = 
             "--coins", ",".join(coins), "--margin", f"{margin:g}", "--days", str(days)]
 
 
+def record_command(coins: list[str]) -> list[str]:
+    return [sys.executable, str(ROOT / "main.py"), "record", "--coins", ",".join(coins)]
+
+
+RECORD_PID = ROOT / "data" / "record.pid"
+
+
 def pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -321,6 +328,8 @@ class Panel(tk.Tk):
         self._button(ctrl, "设置 API key", "#334155", self.key_dialog).pack(side="right")
         self.tune_btn = self._button(ctrl, "回测比较", BLUE, self.tune)
         self.tune_btn.pack(side="right", padx=(0, 8))
+        self.rec_btn = self._button(ctrl, "记录盘口", BLUE, self.toggle_record)
+        self.rec_btn.pack(side="right", padx=(0, 8))
         self.key_label = self._label(ctrl, "", 10, MUTED)
         self.key_label.pack(side="right", padx=8)
 
@@ -427,6 +436,7 @@ class Panel(tk.Tk):
         if getattr(self, "_job", None):
             self.after_cancel(self._job)
         self.check_tune()
+        self.check_record()
         self._job = self.after(1500, self.refresh)
 
     def refresh_log(self):
@@ -563,6 +573,36 @@ class Panel(tk.Tk):
         box.insert("1.0", report)
         box.configure(state="disabled")
         box.pack(fill="both", expand=True, padx=12, pady=12)
+
+    def toggle_record(self):
+        """记录盘口: record order book + trades in the background for short-term research."""
+        pid = running_pid(RECORD_PID)
+        if pid:
+            stop_pid(pid)
+            RECORD_PID.unlink(missing_ok=True)
+            self.after(500, self.check_record)
+            return
+        coins, _ = self.choices()
+        if not coins:
+            messagebox.showwarning("SmartCrypto", "先勾选要记录的币。")
+            return
+        data = ROOT / "data"
+        data.mkdir(exist_ok=True)
+        err = open(data / "record_errors.log", "w", encoding="utf-8")
+        subprocess.Popen(record_command(coins), cwd=str(ROOT),
+                         env=dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8"),
+                         stdout=subprocess.DEVNULL, stderr=err, creationflags=NO_WINDOW)
+        self.after(3000, self.check_record)
+
+    def check_record(self):
+        if running_pid(RECORD_PID):
+            try:
+                msg = (ROOT / "data" / "record_status.txt").read_text(encoding="utf-8")
+            except OSError:
+                msg = "记录盘口中…"
+            self.rec_btn.configure(text="停止记录（" + msg.replace("记录盘口中 ", "")[:16] + "）")
+        else:
+            self.rec_btn.configure(text="记录盘口")
 
     def key_dialog(self):
         d = tk.Toplevel(self, bg=BG, padx=16, pady=12)
