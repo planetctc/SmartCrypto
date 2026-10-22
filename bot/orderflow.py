@@ -27,7 +27,9 @@ def live_flow(ex, symbol: str) -> dict:
     aggressor volume of the last TRADES_LIMIT trades (who is hitting whom)."""
     book = ex.fetch_order_book(symbol, 15)
     trades = ex.fetch_trades(symbol, None, TRADES_LIMIT)
-    return {"bid_qty5": sum(a for _, a, *_ in book["bids"][:5]),
+    return {"bid": book["bids"][0][0] if book["bids"] else 0.0,
+            "ask": book["asks"][0][0] if book["asks"] else 0.0,
+            "bid_qty5": sum(a for _, a, *_ in book["bids"][:5]),
             "ask_qty5": sum(a for _, a, *_ in book["asks"][:5]),
             "buy_qty": sum(t["amount"] for t in trades if t["side"] == "buy"),
             "sell_qty": sum(t["amount"] for t in trades if t["side"] == "sell")}

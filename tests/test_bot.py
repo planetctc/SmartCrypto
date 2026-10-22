@@ -1105,3 +1105,31 @@ def test_no_short_while_btc_is_rising_over_the_last_bars(tmp_path):
     c.state_file = str(tmp_path / "s2.json")
     Engine(c, b2).step()
     assert not b2.opened
+
+
+def test_unfilled_limit_entry_falls_back_to_market_when_price_has_not_run(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    c.entry_order, c.maker_timeout_seconds, c.maker_fallback_market = "maker", 60, True
+    b = FakeMakerBroker(_df_ending_in_signal(c))
+    e = Engine(c, b)
+    e.step()
+    assert e.pending and not b.opened
+    b.now += 61_000
+    e.step()
+    assert not e.pending and len(b.opened) == 1
+    assert "BTC/USDT:USDT" in e.trades
+
+
+def test_limit_entry_rests_at_best_ask_for_a_short(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    c.entry_order, c.flow_confirm = "maker", True
+    b = FakeMakerBroker(_df_ending_in_signal(c))
+    e = Engine(c, b)
+    px = b.px
+    b.flow = lambda s: {"bid": px - 1, "ask": px + 1, "bid_qty5": 1, "ask_qty5": 1,
+                        "buy_qty": 5, "sell_qty": 5}
+    e.step()
+    (pe,) = e.pending.values()
+    assert pe.price == (px + 1 if pe.side == "short" else px - 1)

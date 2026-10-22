@@ -184,18 +184,20 @@ class Engine:
             if status == "open" and now < pe.expires_ms:
                 continue
             if status == "open":
-                self._cancel_pending(sym, now, positions)
+                self._cancel_pending(sym, now, positions, fallback=True)
                 continue
             self.pending.pop(sym)
             if filled > 0:
                 self._on_filled(sym, pe, now)
             else:
                 log.info("%s maker entry %s not filled (%s)", sym, pe.order_id, status)
+                self._market_fallback(sym, pe, now, positions)
         if self.trades.keys() - positions.keys():
             positions.clear()
             positions.update(self.broker.positions())
 
-    def _cancel_pending(self, sym: str, now: int, positions: dict[str, Position]) -> None:
+    def _cancel_pending(self, sym: str, now: int, positions: dict[str, Position],
+                        fallback: bool = False) -> None:
         pe = self.pending.pop(sym)
         self.broker.cancel_order(sym, pe.order_id)
         status, filled, _ = self.broker.order_status(sym, pe.order_id)
@@ -204,6 +206,39 @@ class Engine:
             self._on_filled(sym, pe, now)
         else:
             log.info("%s maker entry %s cancelled (timeout)", sym, pe.order_id)
+            if fallback:
+                self._market_fallback(sym, pe, now, positions)
+
+    def _market_fallback(self, sym: str, pe: PendingEntry, now: int,
+                         positions: dict[str, Position]) -> None:
+        """maker_fallback_market: the limit entry did not fill, take the trade at market
+        anyway (never miss a signal) unless price already ran too far or through the stop."""
+        if not self.cfg.maker_fallback_market:
+            return
+        price = self.broker.price(sym)
+        sign = sign_of(pe.side)
+        dist = abs(pe.price - pe.stop)
+        if sign * (price - pe.price) > 0.5 * dist or sign * (price - pe.stop) <= 0:
+            log.info("%s signal skipped: price already ran %.10g past signal", sym,
+                     price - pe.price)
+            return
+        fill = self.broker.open(sym, pe.side, pe.qty, pe.stop, 0.0 if self.limit_tp else pe.take_profit)
+        self.risk.record_open()
+        tp = pe.take_profit
+        if self.limit_tp and fill > 0:
+            r = self.cfg.strategy.take_profit_r[-1]
+            tp = self._round(sym, fill + sign * abs(fill - pe.stop) * r, pe.side)
+        lev = self.broker.leverage_for(sym) if hasattr(self.broker, "leverage_for") else self.cfg.leverage
+        log.info("OPEN %s %s qty=%s @ %.10g stop=%.10g tp=%.10g margin≈%.2f strength=%.2f (%s)",
+                 sym, pe.side, pe.qty, fill, pe.stop, tp, fill * pe.qty / lev, 0.0,
+                 "market after limit not filled")
+        self.trades[sym] = Trade(pe.side, pe.qty, fill, pe.stop, pe.stop, tp, fill, now, **pe.plan)
+        pos = self.broker.positions().get(sym)
+        if pos:
+            positions[sym] = pos
+            self._liq_safety(sym, pos, pe.stop, now)
+        if sym in self.trades:
+            self._place_tp(sym, self.trades[sym])
 
     def _on_filled(self, sym: str, pe: PendingEntry, now: int) -> None:
         pos = self.broker.positions().get(sym)
@@ -413,13 +448,15 @@ class Engine:
             log.info("%s signal skipped: %s", sym, why)
             return
         move = self._leader_move(now)
-        if move is not None and sign_of(sig.side) * move < 0:
+        if move is not None and sign_of(sig.side) * move < -self.cfg.leader_min_move:
             log.info("%s signal skipped: BTC moving against it (%+.2f%% in %d bars)", sym,
                      move * 100, self.cfg.leader_bars)
             return
+        flow = None
         if self.cfg.flow_confirm and hasattr(self.broker, "flow"):
             try:
-                ok, share, imb = flow_agrees(sig.side, self.broker.flow(sym))
+                flow = self.broker.flow(sym)
+                ok, share, imb = flow_agrees(sig.side, flow, self.cfg.flow_min_share)
             except Exception as e:  # noqa: BLE001 - no flow data must not block trading
                 log.warning("%s order flow not read (%s), trading the signal anyway", sym, e)
             else:
@@ -434,7 +471,11 @@ class Engine:
             log.info("%s signal skipped: price already ran %.10g past signal", sym, price - sig.entry)
             return
         maker = self.cfg.entry_order == "maker"
-        if maker:  # rest at the signal close, never on the wrong side of the market
+        if maker and flow and flow.get("bid") and flow.get("ask"):
+            # rest at the front of our side of the book (sell at best ask, buy at best bid):
+            # fills on the next taker instead of waiting for price to come back to the close
+            price = flow["bid"] if sig.side == "long" else flow["ask"]
+        elif maker:  # rest at the signal close, never on the wrong side of the market
             price = self._round(sym, min(price, sig.entry) if sig.side == "long"
                                 else max(price, sig.entry), sig.side)
         plan = trade_plan(sig.side, price, dist, self.cfg)

@@ -88,9 +88,14 @@ class Config:
     replace_on_new_signal: bool = False
     # before opening, check the live order book and taker flow agree with the signal
     flow_confirm: bool = False
+    flow_min_share: float = 0.5      # taker volume on our side needed (0.45 = 45%)
+    # maker entry not filled in time (or refused as it would cross): enter at market instead,
+    # unless price already ran more than half a stop distance past the limit
+    maker_fallback_market: bool = False
     # only trade with the market leader: skip a short while BTC rose over the last
     # leader_bars bars (and a long while it fell); 0 = off
     leader_bars: int = 0
+    leader_min_move: float = 0.0     # BTC must move at least this much against (0.0005 = 0.05%)
     leader_symbol: str = "BTC/USDT:USDT"
     entry_order: str = "market"      # "market" or "maker" (post-only limit, lower fee)
     maker_timeout_seconds: int = 60  # cancel an unfilled maker entry after this long
