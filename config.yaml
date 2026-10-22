@@ -20,8 +20,8 @@ symbols:
   - BTC/USDT:USDT
   - ETH/USDT:USDT
 
-timeframe: 5m          # 进场看的 K 线周期
-trend_timeframe: 1h    # 判断大方向的 K 线周期
+timeframe: 1h          # 进场看的 K 线周期（90 天回测里只有 1 小时突破不算手续费两段都赚）
+trend_timeframe: 4h    # 判断大方向的 K 线周期
 
 # ---------------- 仓位和杠杆 ----------------
 capital_usd: 100       # 机器人当作账户只有 100 USDT 来算风控（模拟盘假钱很多时用）；0 = 用账户真实余额
@@ -34,8 +34,8 @@ max_open_positions: 1  # 同时只开一单
 # 进场方式:
 #   market = 市价单，马上成交，手续费 0.06%
 #   maker  = 挂单（只做 maker），手续费 0.02%，但价格跑掉就不成交
-entry_order: market
-maker_timeout_seconds: 60   # 挂单多少秒没成交就撤单
+entry_order: maker   # 挂单：回测里 1 小时突破挂单比市价少亏很多（手续费低）
+maker_timeout_seconds: 3600   # 挂单 1 小时（一根 K 线）没成交就撤单，和回测一样
 
 # ---------------- 风控（减少亏损的关键） ----------------
 risk:
@@ -60,7 +60,7 @@ strategy:
   bb_std: 2.5               #   价格超出布林带几倍标准差才算太远
   rsi_period: 14
   rsi_low: 25               #   RSI 低于 25 算超卖（高于 75 算超买）
-  trend_ema: 50            # 1 小时 EMA50 判断大方向
+  trend_ema: 50            # 4 小时 EMA50 判断大方向
   breakout_lookback: 20    # 突破最近 20 根 K 线的高点/低点才进场
   volume_lookback: 20
   volume_factor: 1.2       # 突破那根 K 线成交量要大于平均的 1.2 倍
@@ -69,7 +69,7 @@ strategy:
   atr_stop_mult: 1.0       # 止损 = 1 倍 ATR（再受上面的最大/最小止损限制）
   breakeven_at_r: 1.0      # 赚到 1 倍止损距离后，把止损移到成本，之后开始跟踪
   trail_atr_mult: 1.5      # 之后用 1.5 倍 ATR 跟踪止损锁利润
-  max_hold_bars: 48        # 最多持有 48 根 K 线（5 分钟 × 48 = 4 小时），已经保本的单不限时
+  max_hold_bars: 48        # 最多持有 48 根 K 线（1 小时 × 48 = 2 天），已经保本的单不限时
 
   # 视频的做法（分批进场、补仓、分批止盈、避开整数关口）先放一边，现在是一次开满、一个止盈
   scale_in_frac: 1.0          # 第一批占计划仓位的比例（1 = 一次开满）

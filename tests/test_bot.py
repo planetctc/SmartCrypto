@@ -12,14 +12,18 @@ from bot.config import Config, load_config  # noqa: E402
 from bot.engine import Engine  # noqa: E402
 from bot.exchange import Position  # noqa: E402
 from bot.risk import RiskManager, liquidation_price  # noqa: E402
-from bot.strategy import manage_position, prepare, signal_at  # noqa: E402
+from bot.strategy import TF_MS, manage_position, prepare, signal_at  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 DAY = 86_400_000
 
 
 def cfg() -> Config:
-    return load_config(ROOT / "config.yaml")
+    """config.yaml with the 5m/1h market-entry timing these mechanics tests were built on."""
+    c = load_config(ROOT / "config.yaml")
+    c.timeframe, c.trend_timeframe = "5m", "1h"
+    c.entry_order, c.maker_timeout_seconds = "market", 60
+    return c
 
 
 def test_config_loads_user_settings():
@@ -611,3 +615,10 @@ def test_candle_download_retries_after_too_many_requests(monkeypatch):
 
     assert data._fetch(Ex(), "BTC/USDT:USDT", "1m", 0) == [[1, 1, 1, 1, 1, 1]]
     assert Ex.calls == 3
+
+
+def test_normal_mode_is_1h_breakout_with_limit_entry_waiting_one_bar():
+    c = load_config(ROOT / "config.yaml")
+    assert (c.timeframe, c.trend_timeframe, c.entry_order) == ("1h", "4h", "maker")
+    assert c.strategy.signal_type == "breakout"
+    assert c.maker_timeout_seconds * 1000 == TF_MS["1h"]
