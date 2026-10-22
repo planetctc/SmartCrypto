@@ -27,7 +27,7 @@ NO_WINDOW = 0x08000000 if IS_WIN else 0  # CREATE_NO_WINDOW
 MODES = {"高频模式": "config_hf.yaml", "普通模式": "config.yaml"}
 KEY_VARS = ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE")
 MODE_NAMES = {"paper": "本地模拟", "demo": "Bitget 模拟盘", "live": "真钱实盘"}
-COINS = ("BTC", "ETH", "SOL", "XRP", "DOGE")
+COINS = ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "LINK")
 SETTINGS_FILE = ROOT / "data" / "panel_settings.json"
 MARGIN_MIN, MARGIN_MAX = 5, 15
 
