@@ -590,3 +590,21 @@ def test_tune_variants_cover_every_signal_and_config_is_valid():
         for k, v in change.items():
             setattr(c.strategy, k, v)
         validate(c)
+
+
+def test_candle_download_retries_after_too_many_requests(monkeypatch):
+    import ccxt
+    from bot import data
+    monkeypatch.setattr(data.time, "sleep", lambda s: None)
+
+    class Ex:
+        calls = 0
+
+        def fetch_ohlcv(self, *a):
+            Ex.calls += 1
+            if Ex.calls < 3:
+                raise ccxt.DDoSProtection('bitget {"code":"429","msg":"Too Many Requests"}')
+            return [[1, 1, 1, 1, 1, 1]]
+
+    assert data._fetch(Ex(), "BTC/USDT:USDT", "1m", 0) == [[1, 1, 1, 1, 1, 1]]
+    assert Ex.calls == 3

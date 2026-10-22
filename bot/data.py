@@ -18,6 +18,21 @@ def csv_path(data_dir: str, exchange: str, symbol: str, tf: str) -> Path:
     return Path(data_dir) / f"{exchange}_{name}_{tf}.csv"
 
 
+PAUSE = 0.25  # seconds between candle requests; Bitget answers 429 when history is pulled faster
+RETRY_WAITS = (2, 5, 10, 20, 30, 60)
+
+
+def _fetch(ex, symbol: str, tf: str, since: int) -> list:
+    """One page of candles, waiting and retrying when the exchange says too many requests."""
+    for wait in RETRY_WAITS:
+        try:
+            return ex.fetch_ohlcv(symbol, tf, since, 200)
+        except ccxt.NetworkError as e:  # includes 429 DDoSProtection and RateLimitExceeded
+            log.warning("%s candles: %s; retrying in %ss", symbol, type(e).__name__, wait)
+            time.sleep(wait)
+    return ex.fetch_ohlcv(symbol, tf, since, 200)
+
+
 def download(symbol: str, tf: str, days: int, exchange: str = "bitget",
              data_dir: str = "data") -> Path:
     ex = getattr(ccxt, exchange)({"enableRateLimit": True, "options": {"defaultType": "swap"}})
@@ -33,7 +48,7 @@ def download(symbol: str, tf: str, days: int, exchange: str = "bitget",
         old = None
     rows: list[list] = []
     while since < now - step:
-        batch = ex.fetch_ohlcv(symbol, tf, since, 200)
+        batch = _fetch(ex, symbol, tf, since)
         if not batch:
             # some exchanges only serve recent bars on the default endpoint; skip ahead
             since += 200 * step
@@ -43,7 +58,7 @@ def download(symbol: str, tf: str, days: int, exchange: str = "bitget",
         if nxt <= since:
             break
         since = nxt
-        time.sleep(ex.rateLimit / 1000)
+        time.sleep(max(ex.rateLimit / 1000, PAUSE))
     df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
     if old is not None:
         df = pd.concat([old, df])
