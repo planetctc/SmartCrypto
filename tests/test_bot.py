@@ -243,7 +243,7 @@ def test_engine_flattens_everything_on_daily_loss(tmp_path):
 # ---------- high-frequency mode ----------
 def test_hf_config_loads():
     c = load_config(ROOT / "config_hf.yaml")
-    assert (c.timeframe, c.trend_timeframe, c.entry_order, c.tp_order) == ("5m", "1h", "market", "maker")
+    assert (c.timeframe, c.trend_timeframe, c.entry_order, c.tp_order) == ("5m", "1h", "maker", "maker")
     assert not c.replace_on_new_signal and c.max_open_positions == 8
     assert c.strategy.take_profit_r == [1.0]
     assert c.risk.max_trades_per_day == 40 and c.risk.daily_max_loss_pct == 0.30
@@ -996,3 +996,18 @@ def test_closed_trades_go_to_the_journal(tmp_path):
     e.step()
     rows = (tmp_path / "trades.csv").read_text(encoding="utf-8").splitlines()
     assert rows[0].startswith("closed_utc,coin") and ",ETH,long," in rows[1]
+
+
+def test_limit_take_profit_is_measured_from_the_real_fill(tmp_path):
+    c, b, e = _limit_tp_engine(tmp_path)
+    plain = FakeTpBroker.open
+
+    def slipped(self, s, side, qty, stop, tp):
+        plain(self, s, side, qty, stop, tp)
+        return self.px * (0.998 if side == "short" else 1.002)  # filled 0.2% worse
+    b.open = slipped.__get__(b)
+    e.step()
+    (s, side, qty, stop, _), = b.opened
+    t = e.trades[s]
+    r = c.strategy.take_profit_r[-1]
+    assert abs(t.take_profit - t.entry) == pytest.approx(abs(t.entry - stop) * r, rel=0.01)

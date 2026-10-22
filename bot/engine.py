@@ -423,6 +423,11 @@ class Engine:
 
         fill = self.broker.open(sym, sig.side, qty, stop, exch_tp)
         self.risk.record_open()
+        if self.limit_tp and fill > 0:
+            # the limit take-profit goes in after the fill: measure it from the real fill, so a
+            # slipped market order keeps its full reward instead of a take-profit that is
+            # now much closer than the stop (live XRP 2026-10-22: stop 0.46% away, TP 0.14%)
+            tp = self._round(sym, fill + sign * abs(fill - stop) * s.take_profit_r[-1], sig.side)
         log.info("OPEN %s %s qty=%s @ %.10g stop=%.10g tp=%.10g margin≈%.2f strength=%.2f (%s)",
                  sym, sig.side, qty, fill, stop, tp, margin, sig.strength, sig.reason)
         self._log_plan(sym, extra, tps)

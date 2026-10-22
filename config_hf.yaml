@@ -38,8 +38,8 @@ replace_on_new_signal: false  # 不同币可以同时开，不用平掉换单
 # 进场方式:
 #   market = 市价单，马上成交，手续费 0.06%
 #   maker  = 挂单（只做 maker），手续费 0.02%，但价格跑掉就不成交
-entry_order: market   # 市价进场：信号出来马上成交，不错过
-maker_timeout_seconds: 300   # 改成挂单进场时，挂 5 分钟没成交就撤单
+entry_order: maker            # 挂单进场：手续费低、没有滑点（市价单滑点+手续费吃掉一半止损距离）
+maker_timeout_seconds: 300   # 挂单 5 分钟（一根 K 线）没成交就撤单，等下一个信号
 tp_order: maker    # 止盈方式：maker = 开仓后挂只减仓的限价单止盈（手续费低）；market = 交易所止盈单（触发后市价）
 
 # ---------------- 风控（减少亏损的关键） ----------------
