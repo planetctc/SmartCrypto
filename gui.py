@@ -252,7 +252,7 @@ def _friendly(line: str) -> str:
     if r := re.match(r"FLOWFEED recording order book inside the bot for (.*)", msg):
         return f"{t}  没有在记录盘口的币（{r[1]}），机器人自己开始记录（不用另外开「记录盘口」）"
     if r := re.match(r"EXIT-LIMIT (\S+) \S+ qty=\S+ @ (\S+)", msg):
-        return f"{t}  {coin(r[1])} 拿满 10 分钟，挂单平仓 @ {r[2]}"
+        return f"{t}  {coin(r[1])} 持仓时间到，挂单平仓 @ {r[2]}"
     if r := re.match(r"(\S+) exit limit filled @ (\S+), approx pnl (\S+)", msg):
         return f"{t}  {coin(r[1])} 挂单平仓成交 @ {r[2]}，约 {float(r[3]):+.2f} USDT"
     if r := re.match(r"(\S+) exit limit not placed", msg):

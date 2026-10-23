@@ -1368,6 +1368,7 @@ def _flow_rows(tmp_path, now_ms, buying=True):
 
 def test_flow_mode_enters_on_the_order_book_burst_and_leaves_after_the_hold(tmp_path):
     c = load_config(ROOT / "config_flow.yaml")
+    c.flow_hold_seconds, c.flow_exit_seconds = 600, 120
     c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
     b = FlowBroker(synthetic(300, seed=1))
     b.px = 100.0
