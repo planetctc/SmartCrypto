@@ -128,6 +128,8 @@ def record(symbols: list[str], data_dir: str, interval: float = 1.0) -> None:
                 continue
             time.sleep(max(0.0, interval - (time.time() - t0)))
 
+    threading.Thread(target=record_market, args=(symbols, Path(data_dir) / "market"),
+                     daemon=True).start()
     for i, sym in enumerate(symbols):
         threading.Thread(target=loop, args=(sym,), daemon=True).start()
         time.sleep(interval / max(len(symbols), 1))  # spread the requests over the second
@@ -138,3 +140,50 @@ def record(symbols: list[str], data_dir: str, interval: float = 1.0) -> None:
         hours = (time.time() - started) / 3600
         rows = max((max(r.rows.values()) for r in recs), default=0)
         status.write_text(f"记录盘口中 {hours:.1f} 小时，{rows} 行/币", encoding="utf-8")
+
+
+MARKET_COLUMNS = ["ts", "funding", "open_interest", "long_short"]
+
+
+def market_snapshot(ex, symbol: str) -> dict:
+    """Slow-moving positioning data: funding rate, open interest and the long/short account
+    ratio. Any of them Bitget does not return is left empty."""
+    row = {"ts": ex.milliseconds(), "funding": "", "open_interest": "", "long_short": ""}
+    try:
+        row["funding"] = ex.fetch_funding_rate(symbol).get("fundingRate") or ""
+    except Exception:  # noqa: BLE001 - optional data
+        pass
+    try:
+        oi = ex.fetch_open_interest(symbol)
+        row["open_interest"] = oi.get("openInterestAmount") or oi.get("openInterestValue") or ""
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        hist = ex.fetch_long_short_ratio_history(symbol, "5m", None, 1)
+        row["long_short"] = hist[-1].get("longShortRatio") or "" if hist else ""
+    except Exception:  # noqa: BLE001
+        pass
+    return row
+
+
+def record_market(symbols: list[str], out_dir: Path, every: float = 60.0) -> None:
+    """Every minute: funding / open interest / long-short ratio per coin, to market/COIN_day.csv."""
+    ex = ccxt.bitget({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+    out_dir.mkdir(parents=True, exist_ok=True)
+    while True:
+        t0 = time.time()
+        for sym in symbols:
+            try:
+                row = market_snapshot(ex, sym)
+            except Exception as e:  # noqa: BLE001 - never stop the order book recording
+                log.warning("market data %s: %s", sym, e)
+                continue
+            day = datetime.fromtimestamp(row["ts"] / 1000, timezone.utc).strftime("%Y%m%d")
+            p = out_dir / f"{sym.split('/')[0]}_{day}.csv"
+            new_file = not p.exists()
+            with open(p, "a", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, MARKET_COLUMNS)
+                if new_file:
+                    w.writeheader()
+                w.writerow(row)
+        time.sleep(max(0.0, every - (time.time() - t0)))

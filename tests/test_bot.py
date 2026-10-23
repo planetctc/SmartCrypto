@@ -1234,3 +1234,22 @@ def test_flowtest_finds_a_planted_order_flow_edge_and_not_a_missing_one(tmp_path
     assert "✓" in analyse(load(_orderflow_csv(tmp_path / "a", edge=True)))
     assert "结论：这段数据里" in analyse(load(_orderflow_csv(tmp_path / "b", edge=False)))
     assert "还没有盘口数据" in analyse(load(tmp_path / "none"))
+
+
+def test_full_study_weighs_all_data_and_finds_a_planted_edge(tmp_path):
+    from bot.fullstudy import study
+    rep = study(_orderflow_csv(tmp_path / "a", edge=True))
+    assert "✓" in rep and "主动买卖" in rep
+    assert "还不够" in study(tmp_path / "none")
+
+
+def test_market_snapshot_tolerates_missing_data():
+    from bot.orderflow import market_snapshot
+
+    class Ex:
+        def milliseconds(self): return 1
+        def fetch_funding_rate(self, s): return {"fundingRate": 0.0001}
+        def fetch_open_interest(self, s): raise RuntimeError("not supported")
+        def fetch_long_short_ratio_history(self, *a): return [{"longShortRatio": 1.7}]
+    row = market_snapshot(Ex(), "BTC/USDT:USDT")
+    assert row["funding"] == 0.0001 and row["open_interest"] == "" and row["long_short"] == 1.7

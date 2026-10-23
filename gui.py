@@ -382,7 +382,7 @@ class Panel(tk.Tk):
         self.tune_btn.pack(side="left", padx=(6, 8))
         self.rec_btn = self._button(tools, "记录盘口", BLUE, self.toggle_record)
         self.rec_btn.pack(side="left", padx=(0, 8))
-        self.flow_btn = self._button(tools, "分析盘口", BLUE, self.flowtest)
+        self.flow_btn = self._button(tools, "全面分析", BLUE, self.flowtest)
         self.flow_btn.pack(side="left", padx=(0, 8))
         self.test_btn = self._button(tools, "测试下单", BLUE, self.selftest)
         self.test_btn.pack(side="left")
@@ -630,7 +630,7 @@ class Panel(tk.Tk):
         box.pack(fill="both", expand=True, padx=12, pady=12)
 
     def flowtest(self):
-        """分析盘口: does the recorded order book say anything a round trip's cost can't eat?"""
+        """全面分析: order book alone and all data together; does the recorded order book say anything a round trip's cost can't eat?"""
         data = ROOT / "data"
         data.mkdir(exist_ok=True)
         self.flow_btn.configure(text="分析中…", state="disabled")
@@ -640,13 +640,13 @@ class Panel(tk.Tk):
                                   env=dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8"),
                                   creationflags=NO_WINDOW, timeout=1800)
         finally:
-            self.flow_btn.configure(text="分析盘口", state="normal")
+            self.flow_btn.configure(text="全面分析", state="normal")
         path = data / "flowtest_report.txt"
         if proc.returncode != 0 or not path.exists():
             err = proc.stderr.decode("utf-8", "replace").strip().splitlines()[-8:]
             messagebox.showerror("分析失败", "分析没有完成：\n\n" + "\n".join(err))
             return
-        self._report_window("分析盘口", path.read_text(encoding="utf-8"))
+        self._report_window("全面分析", path.read_text(encoding="utf-8"))
 
     def _report_window(self, title: str, text: str):
         win = tk.Toplevel(self, bg=BG)
