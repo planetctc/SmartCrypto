@@ -101,22 +101,40 @@ class Recorder:
 
 
 def record(symbols: list[str], data_dir: str, interval: float = 1.0) -> None:
-    """Poll until stopped. Status for the control panel goes to data/record_status.txt."""
-    ex = ccxt.bitget({"enableRateLimit": True, "options": {"defaultType": "swap"}})
-    ex.load_markets()
-    symbols = [s for s in symbols if s in ex.markets]  # skip coins Bitget has no futures for
-    rec = Recorder(ex, symbols, Path(data_dir) / "orderflow")
+    """Poll until stopped, every coin in its own thread with its own connection, so each coin
+    gets a row about every `interval` seconds (polling them one after another gave one row
+    per coin every ~20 s with 9 coins). Status for the control panel: data/record_status.txt."""
+    import threading
+    out = Path(data_dir) / "orderflow"
+    probe = ccxt.bitget({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+    probe.load_markets()
+    symbols = [s for s in symbols if s in probe.markets]  # skip coins Bitget has no futures for
+    # 2 requests per coin per poll; stay under ~15 a second (Bitget allows 20 per IP)
+    interval = max(interval, len(symbols) * 2 / 15)
+    recs = []
+
+    def loop(sym: str) -> None:
+        ex = ccxt.bitget({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+        ex.set_markets(probe.markets, probe.currencies)
+        rec = Recorder(ex, [sym], out)
+        recs.append(rec)
+        while True:
+            t0 = time.time()
+            try:
+                rec.poll()
+            except ccxt.NetworkError as e:  # includes 429 too-many-requests
+                log.warning("order book poll %s: %s; waiting 5s", sym, type(e).__name__)
+                time.sleep(5)
+                continue
+            time.sleep(max(0.0, interval - (time.time() - t0)))
+
+    for i, sym in enumerate(symbols):
+        threading.Thread(target=loop, args=(sym,), daemon=True).start()
+        time.sleep(interval / max(len(symbols), 1))  # spread the requests over the second
     status = Path(data_dir) / "record_status.txt"
     started = time.time()
     while True:
-        t0 = time.time()
-        try:
-            rec.poll()
-        except ccxt.NetworkError as e:  # includes 429 too-many-requests
-            log.warning("order book poll: %s; waiting 5s", type(e).__name__)
-            time.sleep(5)
-            continue
+        time.sleep(5)
         hours = (time.time() - started) / 3600
-        status.write_text(f"记录盘口中 {hours:.1f} 小时，{max(rec.rows.values())} 行/币",
-                          encoding="utf-8")
-        time.sleep(max(0.0, interval - (time.time() - t0)))
+        rows = max((max(r.rows.values()) for r in recs), default=0)
+        status.write_text(f"记录盘口中 {hours:.1f} 小时，{rows} 行/币", encoding="utf-8")

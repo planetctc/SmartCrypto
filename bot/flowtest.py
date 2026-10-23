@@ -11,6 +11,7 @@ Signal at second t (no look-ahead: only rows up to t):
   tilt  = (bid_qty5 - ask_qty5) / (bid_qty5 + ask_qty5) at t
   long  when flow >= threshold and tilt >= 0, short mirrored
 Result: mid price `hold` seconds later vs mid at t, one trade at a time per coin.
+Windows and holds are in seconds by timestamp, so rows recorded slower than 1 s still count right.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ import pandas as pd
 
 WINDOWS = (10, 30, 60)          # seconds of taker flow
 THRESHOLDS = (0.5, 0.7, 0.9)    # how one-sided the flow must be
-HOLDS = (30, 60, 180)           # seconds to hold
+HOLDS = (30, 60, 180, 600)      # seconds to hold
 MAKER_RT = 0.0004               # maker in + maker out
 TAKER_RT = 0.0012 + 0.0004      # taker in + out plus slippage
 MIN_HOURS = 6.0
@@ -42,32 +43,44 @@ def load(data_dir: str | Path) -> dict[str, pd.DataFrame]:
 
 
 def features(df: pd.DataFrame, window: int) -> pd.DataFrame:
+    """Flow over the last `window` SECONDS (by timestamp, whatever the row spacing)."""
     d = df.copy()
+    d.index = pd.to_datetime(d["ts"], unit="ms")
     d["mid"] = (d["bid"] + d["ask"]) / 2
-    buy = d["buy_qty"].rolling(window, min_periods=window).sum()
-    sell = d["sell_qty"].rolling(window, min_periods=window).sum()
+    buy = d["buy_qty"].rolling(f"{window}s").sum()
+    sell = d["sell_qty"].rolling(f"{window}s").sum()
     d["flow"] = ((buy - sell) / (buy + sell)).where(buy + sell > 0, 0.0)
     book = d["bid_qty5"] + d["ask_qty5"]
     d["tilt"] = ((d["bid_qty5"] - d["ask_qty5"]) / book).where(book > 0, 0.0)
     d["spread"] = (d["ask"] - d["bid"]) / d["mid"]
-    return d
+    return d.reset_index(drop=True)
 
 
 def trades(d: pd.DataFrame, threshold: float, hold: int) -> pd.DataFrame:
-    """One trade at a time: enter on a signal, exit `hold` rows later (rows are ~1 s apart)."""
+    """One trade at a time: enter on a signal, exit at the first row `hold` seconds later
+    (skipped when the recording has a gap there)."""
     flow, tilt, mid = d["flow"].to_numpy(), d["tilt"].to_numpy(), d["mid"].to_numpy()
     ts, spread = d["ts"].to_numpy(), d["spread"].to_numpy()
+    exit_at = np.searchsorted(ts, ts + hold * 1000)
     rows, i, n = [], 0, len(d)
-    while i < n - hold:
+    while i < n:
+        j = exit_at[i]
+        if j >= n:
+            break
         side = 1 if flow[i] >= threshold and tilt[i] >= 0 else \
             -1 if flow[i] <= -threshold and tilt[i] <= 0 else 0
-        if side:
-            move = side * (mid[i + hold] / mid[i] - 1)
-            rows.append((ts[i], move, spread[i]))
-            i += hold
+        if side and ts[j] - ts[i] <= hold * 1500:
+            rows.append((ts[i], side * (mid[j] / mid[i] - 1), spread[i]))
+            i = j
         else:
             i += 1
     return pd.DataFrame(rows, columns=["ts", "move", "spread"])
+
+
+def spacing(frames: dict[str, pd.DataFrame]) -> float:
+    """Median seconds between rows of one coin."""
+    gaps = [np.median(np.diff(f["ts"].to_numpy())) / 1000 for f in frames.values() if len(f) > 1]
+    return float(np.median(gaps)) if gaps else 0.0
 
 
 def analyse(frames: dict[str, pd.DataFrame]) -> str:
@@ -76,8 +89,12 @@ def analyse(frames: dict[str, pd.DataFrame]) -> str:
     t0 = min(f["ts"].iloc[0] for f in frames.values())
     t1 = max(f["ts"].iloc[-1] for f in frames.values())
     hours = (t1 - t0) / 3_600_000
+    gap = spacing(frames)
     head = [f"盘口数据：{'、'.join(frames)}，共 {hours:.1f} 小时，"
-            f"{sum(len(f) for f in frames.values())} 行"]
+            f"{sum(len(f) for f in frames.values())} 行，每个币约 {gap:.0f} 秒一行"]
+    if gap > 5:
+        head.append(f"注意：每个币 {gap:.0f} 秒才一行，太粗，看不清几十秒内的变化。"
+                    "请用新版「记录盘口」重新录（现在每个币约 1 秒一行）。")
     if hours < MIN_HOURS:
         return "\n".join(head + [f"数据太少（不到 {MIN_HOURS:.0f} 小时），继续记录盘口再来分析。"])
     cut = t0 + (t1 - t0) * 2 / 3
