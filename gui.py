@@ -220,16 +220,12 @@ def _friendly(line: str) -> str:
         found = f"{r[5]} 个信号" if r[5] != "0" else "没有信号"
         tf = {"1m": "1分", "5m": "5分", "15m": "15分", "1h": "1小时"}.get(r[6], r[6]) if r[6] else ""
         return (f"{t}  {tf}扫描 {r[1]} 个币：大方向向上 {r[2]}、向下 {r[3]}、不明 {r[4]}，{found}")
-    if r := re.match(r"LOOK (\S+) (\S+) trend ([+-]\d) need (\S+)% vol (\S+)x struct (\S+)", msg):
+    if r := re.match(r"LOOK (\S+) (\S+) trend ([+-]\d) up (\S+)% down (\S+)% vol (\S+)x struct (\S+)", msg):
         tf = {"15m": "15分", "1h": "1小时"}.get(r[2], r[2])
         way = {"+1": "向上", "-1": "向下"}.get(r[3], "不明")
-        if r[3] in ("+1", "-1") and r[4] != "nan":
-            act = "做多" if r[3] == "+1" else "做空"
-            gap = f"离{'突破高点' if r[3] == '+1' else '跌破低点'}还差 {float(r[4]):.2f}%（到了才{act}）"
-        else:
-            gap = "方向不明，不做"
-        st = f"，大结构 {r[6]} 分" if r[6] != "-" else ""
-        return f"{t}  {coin(r[1])} {tf}：大方向{way}，{gap}，成交量 {r[5]} 倍{st}"
+        st = f"，大结构 {r[7]} 分" if r[7] != "-" else ""
+        return (f"{t}  {coin(r[1])} {tf}：均线{way}，再涨 {float(r[4]):.2f}% 突破可做多，"
+                f"再跌 {float(r[5]):.2f}% 跌破可做空，成交量 {r[6]} 倍{st}")
     if msg == "CHECK account":
         return f"{t}  读取账户…"
     if r := re.match(r"CHECK equity (\S+) positions (\d+) pending (\d+)", msg):

@@ -181,7 +181,7 @@ def validate(cfg: Config) -> None:
     if not 0 < r.min_stop_pct < r.max_stop_pct:
         raise ValueError("need 0 < risk.min_stop_pct < risk.max_stop_pct")
     s = cfg.strategy
-    if s.signal_type not in ("breakout", "pullback", "combo", "adaptive", "reversion", "score",
+    if s.signal_type not in ("breakout", "both", "pullback", "combo", "adaptive", "reversion", "score",
                              "flow"):
         raise ValueError("strategy.signal_type must be breakout, pullback, combo, adaptive, "
                          "reversion or score")

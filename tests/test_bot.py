@@ -30,6 +30,7 @@ def cfg() -> Config:
     c.structure_min_score = c.structure_need = c.leader_bars = 0
     c.flow_confirm = False
     c.scan_timeframes = []  # one timeframe: the mechanics below are per bar
+    c.strategy.signal_type = "breakout"  # the trend-following breakout these tests were built on
     return c
 
 
@@ -646,7 +647,7 @@ def test_candle_download_retries_after_too_many_requests(monkeypatch):
 def test_normal_mode_is_15m_breakout_with_limit_entry_waiting_one_bar():
     c = load_config(ROOT / "config.yaml")
     assert (c.timeframe, c.trend_timeframe, c.entry_order, c.tp_order) == ("15m", "1h", "maker", "maker")
-    assert c.strategy.signal_type == "breakout"
+    assert c.strategy.signal_type == "both"
     assert c.maker_timeout_seconds * 1000 == TF_MS["15m"]
     assert c.strategy.max_hold_bars * TF_MS["15m"] == 4 * TF_MS["1h"]
 
@@ -1636,3 +1637,15 @@ def test_demo_start_counts_from_fresh_capital_even_after_old_losses(tmp_path):
     e.risk.state.equity_baseline = b.balance()[0] + 500  # account fell 500 since the old baseline
     equity, _ = e._balance()
     assert equity == pytest.approx(100)
+
+
+def test_both_ways_longs_a_new_high_and_shorts_a_new_low_against_the_trend_average():
+    from bot.strategy import _side
+    c = cfg()
+    c.strategy.signal_type = "both"
+    row = pd.Series({"close": 105.0, "hh": 104.0, "ll": 95.0, "atr": 1.0, "trend": -1,
+                     "rng_hi": 104.0, "rng_lo": 95.0, "open": 103.0, "high": 105.0, "low": 102.0})
+    assert _side(row, c)[0] == "long"   # trend average down, still a long on a new high
+    row = row.copy()
+    row.update({"close": 94.0, "trend": 1, "open": 96.0, "high": 96.5, "low": 93.5})
+    assert _side(row, c)[0] == "short"  # trend average up, still a short on a new low

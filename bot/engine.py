@@ -488,16 +488,12 @@ class Engine:
         """What the bot sees on a coin with no signal yet (15m and 1h scans): the trend, how
         far price still is from the breakout, volume, and the big-structure score."""
         px = float(row["close"])
-        if trend > 0:
-            need = float(row["hh"]) / px - 1
-        elif trend < 0:
-            need = px / float(row["ll"]) - 1
-        else:
-            need = float("nan")
+        up, down = float(row["hh"]) / px - 1, px / float(row["ll"]) - 1
         vol = float(row["volume"]) / float(row["vol_avg"]) if row["vol_avg"] > 0 else 0.0
         st = self._structure(sym, now)
-        log.info("LOOK %s %s trend %+d need %.3f%% vol %.1fx struct %s", sym, self.cfg.timeframe,
-                 trend, need * 100, vol, "-" if not st else f"{st['score']:+d}")
+        log.info("LOOK %s %s trend %+d up %.3f%% down %.3f%% vol %.1fx struct %s", sym,
+                 self.cfg.timeframe, trend, up * 100, down * 100, vol,
+                 "-" if not st else f"{st['score']:+d}")
 
     # ---------- 盘口模式 ----------
     def _flow_step(self, now: int, positions: dict[str, Position]) -> None:
@@ -771,9 +767,10 @@ class Engine:
             if sign * st["score"] <= -self.cfg.structure_min_score:
                 log.info("%s signal skipped: structure against it (score %+d)", sym, st["score"])
                 return
-            if sign * st["score"] < self.cfg.structure_need:
+            need = 0 if sig.kind == "range" else self.cfg.structure_need  # range edge: not against is enough
+            if sign * st["score"] < need:
                 log.info("%s signal skipped: structure not with it (score %+d, need %+d)", sym,
-                         st["score"], sign * self.cfg.structure_need)
+                         st["score"], sign * need)
                 return
             near = self.cfg.structure_near_level
             if sign > 0 and st["res"] > sig.entry and st["res"] / sig.entry - 1 < near:

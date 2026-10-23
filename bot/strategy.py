@@ -135,6 +135,20 @@ def votes(out: pd.DataFrame, cfg: Config) -> pd.DataFrame:
     return out
 
 
+def _range_edge(row: pd.Series, cfg: Config) -> tuple[str, float] | None:
+    """Sell the top of the range when the bar is pushed back down, buy the bottom when held."""
+    close = row["close"]
+    hi, lo = row["rng_hi"], row["rng_lo"]
+    if pd.isna(hi) or pd.isna(lo) or (hi - lo) / close < 2 * cfg.risk.min_stop_pct:
+        return None  # range too narrow for a stop and a target inside it
+    where = (close - lo) / (hi - lo)
+    if where >= 0.8 and close < row["open"] and row["high"] >= lo + 0.9 * (hi - lo):
+        return "short", where - 0.5
+    if where <= 0.2 and close > row["open"] and row["low"] <= lo + 0.1 * (hi - lo):
+        return "long", 0.5 - where
+    return None
+
+
 def _side(row: pd.Series, cfg: Config) -> tuple[str, float] | None:
     """Which way the closed bar says to trade, and how clean the setup is (0..1)."""
     s = cfg.strategy
@@ -160,15 +174,16 @@ def _side(row: pd.Series, cfg: Config) -> tuple[str, float] | None:
             if trend == -1 and (close < row["ll"] or row["high"] >= row["ema_fast"] > close):
                 return "short", 0.5
             return None
-        hi, lo = row["rng_hi"], row["rng_lo"]
-        if pd.isna(hi) or pd.isna(lo) or (hi - lo) / close < 2 * cfg.risk.min_stop_pct:
-            return None  # range too narrow for a stop and a target inside it
-        where = (close - lo) / (hi - lo)
-        if where >= 0.8 and close < row["open"] and row["high"] >= lo + 0.9 * (hi - lo):
-            return "short", where - 0.5
-        if where <= 0.2 and close > row["open"] and row["low"] <= lo + 0.1 * (hi - lo):
-            return "long", 0.5 - where
-        return None
+        return _range_edge(row, cfg)
+    if s.signal_type == "both":
+        # 多空都做 (nick 10/24): new high -> long, new low -> short, rejected at the top of the
+        # range -> short, held at the bottom -> long, whatever the trend average says; the
+        # 全面看 checks (structure, levels, BTC, order book) decide whether to take it
+        if close > row["hh"]:
+            return "long", (close - row["hh"]) / a
+        if close < row["ll"]:
+            return "short", (row["ll"] - close) / a
+        return _range_edge(row, cfg)
     if s.signal_type in ("breakout", "combo"):
         if trend == 1 and close > row["hh"]:
             return "long", (close - row["hh"]) / a
@@ -212,7 +227,7 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
     if vol_ratio < s.volume_factor:
         return None
     trend_dist = abs(row["trend_close"] - row["trend_ema"]) / row["trend_ema"]
-    if trend_dist < s.trend_min_gap:
+    if trend_dist < s.trend_min_gap and s.signal_type != "both":
         return None  # trend too weak: price is hugging its average, breakouts there fail more
     picked = _side(row, cfg)
     if picked is None:
@@ -237,6 +252,8 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
         in_trend = row["trend"] != 0 and trend_dist >= s.range_trend_gap
         kind = "range" if not in_trend else (
             "breakout" if (close > row["hh"] if side == "long" else close < row["ll"]) else "bounce")
+    elif kind == "both":
+        kind = "breakout" if (close > row["hh"] if side == "long" else close < row["ll"]) else "range"
     elif kind == "combo":
         kind = "breakout" if (close > row["hh"] if side == "long" else close < row["ll"]) else "bounce"
     reason = f"{side} {kind} vol x{vol_ratio:.1f} trend {trend_dist:.2%}"
