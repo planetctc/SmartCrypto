@@ -25,6 +25,8 @@ from .strategy import TF_MS
 log = logging.getLogger("bot.race")
 
 # (name, base config, overrides)  - overrides: "a.b" for nested fields
+H1 = {"timeframe": "1h", "trend_timeframe": "4h", "maker_timeout_seconds": 3600,
+      "strategy.max_hold_bars": 4}
 M15 = {"timeframe": "15m", "trend_timeframe": "1h", "maker_timeout_seconds": 900,
        "strategy.max_hold_bars": 16}
 M5 = {"timeframe": "5m", "trend_timeframe": "1h", "maker_timeout_seconds": 300,
@@ -37,8 +39,8 @@ KLINE_ONLY = {"structure_min_score": 0, "structure_need": 0, "leader_bars": 0,
 # leaning with the trade, no support/resistance or round number right ahead, BTC not against
 # it, live order book with it. They differ only in entry timeframe and how fast they take profit.
 VARIANTS = [
-    ("1h全面看", "config.yaml", {}),
-    ("1h全面看·止盈1R", "config.yaml", {"strategy.take_profit_r": [1.0]}),
+    ("1h全面看", "config.yaml", dict(H1)),
+    ("1h全面看·止盈1R", "config.yaml", {**H1, "strategy.take_profit_r": [1.0]}),
     ("15分全面看", "config.yaml", dict(M15)),
     ("15分全面看·止盈1R", "config.yaml", {**M15, "strategy.take_profit_r": [1.0]}),
     ("5分全面看", "config.yaml", dict(M5)),

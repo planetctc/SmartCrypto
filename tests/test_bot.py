@@ -642,11 +642,12 @@ def test_candle_download_retries_after_too_many_requests(monkeypatch):
     assert Ex.calls == 3
 
 
-def test_normal_mode_is_1h_breakout_with_limit_entry_waiting_one_bar():
+def test_normal_mode_is_15m_breakout_with_limit_entry_waiting_one_bar():
     c = load_config(ROOT / "config.yaml")
-    assert (c.timeframe, c.trend_timeframe, c.entry_order, c.tp_order) == ("1h", "4h", "maker", "maker")
+    assert (c.timeframe, c.trend_timeframe, c.entry_order, c.tp_order) == ("15m", "1h", "maker", "maker")
     assert c.strategy.signal_type == "breakout"
-    assert c.maker_timeout_seconds * 1000 == TF_MS["1h"]
+    assert c.maker_timeout_seconds * 1000 == TF_MS["15m"]
+    assert c.strategy.max_hold_bars * TF_MS["15m"] == 4 * TF_MS["1h"]
 
 
 def test_score_signal_counts_votes_and_explains_itself():
