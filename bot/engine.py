@@ -810,7 +810,7 @@ class Engine:
             self._flow_exit(sym, p, t, now)
             return
         price = self.broker.price(sym)
-        if self.limit_tp and t.take_profit != t.entry:
+        if self.limit_tp and t.take_profit != t.entry and t.exit_kind != "late":
             sign = 1 if t.side == "long" else -1
             if not t.tp_order_id and sign * (price - t.take_profit) >= 0:
                 self._close(sym, p, now, "take-profit")  # limit refused: take it at market
@@ -822,10 +822,31 @@ class Engine:
                             self.atr.get(sym, 0.0), bars, self.cfg)
         if d.new_stop is not None:
             t.stop = d.new_stop
-        if d.close:
+        if d.close and d.reason == "max hold time" and self.cfg.strategy.late_exit:
+            # 人工平法 (nick 2026-10-23): when the time is up do not dump the trade at market;
+            # rest the exit at the best price of the last 30 minutes, market only an hour later
+            hold_ms = self.cfg.strategy.max_hold_bars * self.tf_ms
+            if now - t.opened_ms >= hold_ms + LATE_GIVEUP_MS:
+                self._close(sym, p, now, "max hold time")
+            else:
+                self._late_exit(sym, t, price, now)
+        elif d.close:
             self._close(sym, p, now, d.reason)
         else:
             self._scale(sym, t, price)
+
+    def _late_exit(self, sym: str, t: Trade, price: float, now: int) -> None:
+        if t.exit_kind == "late" and now - t.exit_since < LATE_REFRESH_MS:
+            return
+        try:
+            bars = self.broker.ohlcv(sym, "1m", LATE_WINDOW_MS // 60_000)
+            best = float(bars["high"].max() if t.side == "long" else bars["low"].min())
+        except Exception as e:  # noqa: BLE001 - no 1m candles: aim at the current price
+            log.info("%s 1m candles not read for the exit (%s)", sym, e)
+            best = price
+        px = max(best, price) if t.side == "long" else min(best, price)
+        self._place_exit(sym, t, self._round(sym, px, "short" if t.side == "long" else "long"),
+                         "late", now)
 
     def _scale(self, sym: str, t: Trade, price: float) -> None:
         """补仓, 平加仓 and 分批止盈 for an open trade (the video's way of trading)."""

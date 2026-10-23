@@ -1508,3 +1508,22 @@ def test_trend_filter_keeps_only_bursts_with_the_last_hour():
     mid = np.linspace(100, 101, 7200)
     s = trend_sign(ts, mid, 60)
     assert s[-1] == 1 and s[100] == 0
+
+
+def test_time_up_rests_exit_at_recent_best_instead_of_market(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["ETH/USDT:USDT"], str(tmp_path / "s.json")
+    c.strategy.late_exit, c.strategy.max_hold_bars = True, 2
+    b = FlowBroker(_df_ending_in_signal(c))
+    e = Engine(c, b)
+    e.step()
+    assert b.opened
+    side = b.opened[0][1]
+    sym = "ETH/USDT:USDT"
+    b.now += 3 * 300_000 + 1                       # past 2 bars, trade not at break-even
+    b.px = b.pos[sym].entry * (0.999 if side == "long" else 1.001)
+    e.step()
+    assert not b.closed and b.tps and e.trades[sym].exit_kind == "late"
+    b.now += 3_600_000 + 1                         # an hour later still open: market
+    e.step()
+    assert b.closed == [sym]

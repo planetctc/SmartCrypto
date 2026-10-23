@@ -55,6 +55,8 @@ class StrategyConfig:
     breakeven_at_r: float = 1.0
     trail_atr_mult: float = 1.5
     max_hold_bars: int = 48
+    # time up: rest the exit at the best price of the last 30 minutes instead of a market close
+    late_exit: bool = False
     # 分批进场: first batch now, 补仓 (second batch) if price first goes scale_in_at_r against us
     scale_in_frac: float = 0.5                 # first batch share of the planned size (1 = all at once)
     scale_in_at_r: float = 0.5                 # 0 = no 补仓: trade the first batch only
