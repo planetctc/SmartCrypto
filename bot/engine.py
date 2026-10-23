@@ -41,7 +41,8 @@ class Trade:
     add_qty: float = 0.0      # qty of the second batch that is open now
     add_fill: float = 0.0
     add_state: str = ""       # "" = waiting, "open" = 补仓 done, "done" = 平加仓 done
-    reason: str = ""          # why it was opened (signal kind), for the trade journal
+    reason: str = ""          # why it was opened and what the bot saw, for the trade journal
+    kind: str = ""            # setup that opened it (breakout / bounce ...), learned per kind
     tps: list = field(default_factory=list)      # 分批止盈 levels still to hit (exchange has the last)
     tp_qtys: list = field(default_factory=list)  # qty to close at each of those levels
     realized: float = 0.0     # profit already taken from partial closes
@@ -306,7 +307,8 @@ class Engine:
                 + fee * px * t.qty
             pnl = sign * (px - avg) * t.qty - fees + t.realized
             log.info("%s position gone (exchange stop/TP), approx pnl %.2f", sym, pnl)
-            self.risk.record_close(now, sym, pnl, pnl < 0, self.tf_ms)
+            self.risk.record_close(now, sym, pnl, pnl < 0, self.tf_ms,
+                                   (f"kind:{t.kind}",) if t.kind else ())
             self._journal(sym, t.side, avg, px, "exchange stop/TP", pnl, t.opened_ms, now, t.reason)
 
     def _journal(self, sym: str, side: str, entry: float, exit_: float, why: str, pnl: float,
@@ -342,7 +344,8 @@ class Engine:
         pnl = sign * (fill - p.entry) * p.qty - fees + (t.realized if t else 0.0)
         log.info("CLOSE %s %s qty=%s @ %.10g (%s) pnl≈%.2f", sym, p.side, p.qty, fill, why, pnl)
         stopped = pnl < 0 and why not in ("max hold time", "replaced by new signal")
-        self.risk.record_close(now, sym, pnl, stopped, self.tf_ms)
+        self.risk.record_close(now, sym, pnl, stopped, self.tf_ms,
+                               (f"kind:{t.kind}",) if t and t.kind else ())
         self._journal(sym, p.side, p.entry, fill, why, pnl, t.opened_ms if t else now, now,
                       t.reason if t else "")
 
@@ -453,10 +456,14 @@ class Engine:
                      move * 100, self.cfg.leader_bars)
             return
         flow = None
+        seen = {"kind": sig.kind, "btc": "" if move is None else f"{move * 100:+.3f}%",
+                "atr": f"{sig.atr / sig.entry * 100:.3f}%",
+                "hour": datetime.fromtimestamp(now / 1000, timezone.utc).hour}
         if self.cfg.flow_confirm and hasattr(self.broker, "flow"):
             try:
                 flow = self.broker.flow(sym)
                 ok, share, imb = flow_agrees(sig.side, flow, self.cfg.flow_min_share)
+                seen["flow"], seen["book"] = f"{share:.2f}", f"{imb:+.2f}"
             except Exception as e:  # noqa: BLE001 - no flow data must not block trading
                 log.warning("%s order flow not read (%s), trading the signal anyway", sym, e)
             else:
@@ -487,7 +494,7 @@ class Engine:
         tp = tps[-1]
         lev = self.broker.leverage_for(sym) if hasattr(self.broker, "leverage_for") else None
         sizing, why = self.risk.size(price, stop, sig.side, sig.strength, free, equity, lev,
-                                     self._open_risk(), sym)
+                                     self._open_risk(), sym, (f"kind:{sig.kind}",))
         if sizing is None:
             log.info("%s signal skipped: %s", sym, why)
             return
@@ -501,7 +508,8 @@ class Engine:
         extra = {"add_price": self._round(sym, plan.add_price, sig.side) if add > 0 else 0.0,
                  "add_plan": add, "tps": tps[:-1],
                  "tp_qtys": [self.broker.round_qty(sym, qty * f) for f in s.take_profit_split],
-                 "reason": sig.reason}
+                 "reason": sig.reason + " | " + " ".join(f"{k}={v}" for k, v in seen.items()),
+                 "kind": sig.kind}
         margin = sizing.margin * qty / sizing.qty
         if swap:  # only now that the new trade is certain to be placed
             self._swap_out(swap, sym, now, positions)

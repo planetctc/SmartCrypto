@@ -989,7 +989,7 @@ def test_coin_that_keeps_losing_trades_at_half_size_never_skipped():
         rm.record_close(1, "ETH/USDT:USDT", pnl, pnl < 0, 60_000)
     half, _ = rm.size(3000, 2985, "long", 1.0, 100, 100, 100, symbol="ETH/USDT:USDT")
     other, _ = rm.size(3000, 2985, "long", 1.0, 100, 100, 100, symbol="BTC/USDT:USDT")
-    assert half.margin == pytest.approx(max(c.min_margin_usd, full.margin / 2))
+    assert half.margin == pytest.approx(full.margin / 2)
     assert other.margin == full.margin
 
 
@@ -1147,3 +1147,31 @@ def test_stop_keeps_min_distance_from_the_real_entry_price(tmp_path):
     e.step()
     (pe,) = e.pending.values()
     assert abs(pe.price - pe.stop) / pe.price >= c.risk.min_stop_pct * 0.999
+
+
+def test_a_losing_setup_kind_trades_at_half_size_on_every_coin():
+    c = cfg()
+    c.fixed_margin_usd = c.max_margin_usd = 10
+    rm = RiskManager(c)
+    rm.state.day_start_equity = 100.0
+    full, _ = rm.size(3000, 2985, "long", 1.0, 100, 100, 100, symbol="ETH/USDT:USDT",
+                      learn_keys=("kind:bounce",))
+    for i, pnl in enumerate((-1.0, -1.0, 0.5)):
+        rm.record_close(1, ["BTC/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT"][i], pnl, pnl < 0,
+                        60_000, ("kind:bounce",))
+    half, _ = rm.size(3000, 2985, "long", 1.0, 100, 100, 100, symbol="ETH/USDT:USDT",
+                      learn_keys=("kind:bounce",))
+    other, _ = rm.size(3000, 2985, "long", 1.0, 100, 100, 100, symbol="ETH/USDT:USDT",
+                       learn_keys=("kind:breakout",))
+    assert half.margin == pytest.approx(full.margin / 2) and other.margin == full.margin
+
+
+def test_combo_signal_says_which_setup_fired():
+    import pandas as pd
+    from bot.strategy import signal_at
+    c = cfg()
+    c.strategy.signal_type, c.strategy.volume_factor, c.strategy.trend_min_gap = "combo", 0, 0
+    row = pd.Series({"close": 99.0, "open": 99.5, "high": 100.5, "low": 98.8, "atr": 1.0,
+                     "trend": -1, "hh": 103.0, "ll": 97.0, "ema_fast": 100.0, "volume": 1.0,
+                     "vol_avg": 1.0, "trend_ema": 101.0, "trend_close": 99.0})
+    assert signal_at(row, c).kind == "bounce"

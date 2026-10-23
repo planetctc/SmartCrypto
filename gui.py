@@ -217,6 +217,10 @@ def _friendly(line: str) -> str:
         return f"{t}  {coin(r[1])} 挂单只成交了一部分（{r[2]}/{r[3]}），剩下的已撤"
     if r := re.match(r"TODAY (\d+) trades, pnl (\S+)", msg):
         return f"{t}  今天已平 {r[1]} 单，合计 {float(r[2]):+.2f} USDT"
+    if r := re.match(r"kind:(\S+) last (\d+) trades (\S+): half size", msg):
+        kinds = {"breakout": "突破", "bounce": "反弹被打回", "pullback": "回踩", "reversion": "超买超卖"}
+        return (f"{t}  「{kinds.get(r[1], r[1])}」类信号最近 {r[2]} 单合计 {float(r[3]):+.2f}，"
+                f"这单保证金减半")
     if r := re.match(r"(\S+) last (\d+) trades (\S+): half size", msg):
         return f"{t}  {coin(r[1])} 最近 {r[2]} 单合计 {float(r[3]):+.2f}，这单保证金减半"
     if r := re.match(r"no futures market for (\S+) on Bitget", msg):

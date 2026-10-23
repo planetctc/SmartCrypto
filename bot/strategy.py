@@ -29,6 +29,7 @@ class Signal:
     strength: float    # 0..1, maps to margin between min and max
     reason: str
     votes: tuple = ()  # score signal: the indicators that agreed with the side
+    kind: str = ""     # which setup fired: breakout / bounce / pullback / reversion / score
 
 
 def ema(s: pd.Series, n: int) -> pd.Series:
@@ -206,13 +207,16 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
         np.clip(trend_dist / 0.01, 0, 1),
         np.clip(breakout, 0, 1),
     ]))
-    reason = f"{side} {s.signal_type} vol x{vol_ratio:.1f} trend {trend_dist:.2%}"
+    kind = s.signal_type
+    if kind == "combo":
+        kind = "breakout" if (close > row["hh"] if side == "long" else close < row["ll"]) else "bounce"
+    reason = f"{side} {kind} vol x{vol_ratio:.1f} trend {trend_dist:.2%}"
     if s.signal_type == "score":
         want = 1 if side == "long" else -1
         agree = tuple(v for v in VOTES if row[f"v_{v}"] == want)
         reason = f"{side} 综合 {abs(int(row['score']))}/{len(VOTES)}：{'、'.join(VOTES[v] for v in agree)}"
-        return Signal(side, close, stop, tp, a, strength, reason, agree)
-    return Signal(side, close, stop, tp, a, strength, reason)
+        return Signal(side, close, stop, tp, a, strength, reason, agree, "score")
+    return Signal(side, close, stop, tp, a, strength, reason, kind=kind)
 
 
 @dataclass
