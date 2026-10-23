@@ -107,21 +107,29 @@ def tune_variants():
     """(name, top-level config changes, strategy changes, show indicators) for every
     combination the panel compares.
 
-    This round compares the 1-minute scalping signals live demo has been running: going with
-    the 15-minute trend only (combo), reading the market first (adaptive: trend -> with it,
-    sideways -> sell the range top / buy the bottom), and range trading only. The order book
-    and BTC filters only exist live, so this compares the signals themselves.
+    90 days of real data: all three 1-minute setups lost even before fees (win rate ~30%),
+    and fees are about 0.7 USDT a trade at 10 margin x 100. So this round searches wider:
+    the same setups faded (opposite side), bigger targets so a win covers its fees, and
+    3/5/15-minute bars that move enough per trade.
     """
-    top = {"timeframe": "1m", "trend_timeframe": "15m", "entry_order": "maker",
-           "tp_order": "maker", "maker_timeout_seconds": 60}
-    base = {"take_profit_r": [1.0], "max_hold_bars": 10, "breakout_lookback": 15,
-            "trend_ema": 50, "volume_factor": 1.0, "trend_min_gap": 0}
-    return [
-        ("1 分钟·只顺 15 分钟大方向（突破+反弹被打回）", top, {**base, "signal_type": "combo"}, False),
-        ("1 分钟·先看行情：有趋势顺势，横盘高空低多", top, {**base, "signal_type": "adaptive"}, False),
-        ("1 分钟·只做横盘：区间上沿空、下沿多", top,
-         {**base, "signal_type": "adaptive", "range_trend_gap": 1.0}, False),
-    ]
+    out = []
+    base = {"breakout_lookback": 15, "trend_ema": 50, "volume_factor": 1.0, "trend_min_gap": 0}
+    for tf_name, tf, trend, hold in (("1 分钟", "1m", "15m", 10), ("5 分钟", "5m", "1h", 24),
+                                     ("15 分钟", "15m", "4h", 24)):
+        top = {"timeframe": tf, "trend_timeframe": trend, "entry_order": "maker",
+               "tp_order": "maker", "maker_timeout_seconds": 60 if tf == "1m" else 300}
+        b = {**base, "max_hold_bars": hold}
+        out += [
+            (f"{tf_name}·先看行情·止盈 2 倍", top, {**b, "signal_type": "adaptive",
+                                                  "take_profit_r": [2.0]}, False),
+            (f"{tf_name}·只做横盘·止盈 1 倍", top, {**b, "signal_type": "adaptive",
+                                                  "range_trend_gap": 1.0, "take_profit_r": [1.0]}, False),
+            (f"{tf_name}·反着做（顺势信号反过来）·止盈 1 倍", top,
+             {**b, "signal_type": "combo", "reverse": True, "take_profit_r": [1.0]}, False),
+            (f"{tf_name}·顺势突破+反弹·止盈 3 倍", top, {**b, "signal_type": "combo",
+                                                      "take_profit_r": [3.0]}, False),
+        ]
+    return out
 
 
 def indicator_lines(trades, cut):
@@ -223,8 +231,10 @@ def cmd_tune(cfg, args):
     def describe(label, part):
         (a, na, wa, ga), (b, nb, wb, gb) = part["train"], part["test"]
         return [f"   {label}：约 {(na + nb) / days:.1f} 单/天",
-                f"     挑选段 {a:+.2f} USDT，{na} 单，胜率 {wa:.0f}%（不算手续费 {ga:+.2f}）",
-                f"     验证段 {b:+.2f} USDT，{nb} 单，胜率 {wb:.0f}%（不算手续费 {gb:+.2f}）"]
+                f"     挑选段 {a:+.2f} USDT，{na} 单，胜率 {wa:.0f}%（不算手续费 {ga:+.2f}，"
+                f"每单 {ga / max(na, 1):+.2f}）",
+                f"     验证段 {b:+.2f} USDT，{nb} 单，胜率 {wb:.0f}%（不算手续费 {gb:+.2f}，"
+                f"每单 {gb / max(nb, 1):+.2f}）"]
 
     lines = [f"{short(cfg.symbols)}，真实 K 线 {days:.0f} 天，每单保证金 {cfg.max_margin_usd:g}，已扣手续费",
              f"前 {(cut - t0) / day:.0f} 天用来挑（排名、挑币），后 {(t1 - cut) / day:.0f} 天用来验证（挑的时候没看过）。",

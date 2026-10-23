@@ -217,6 +217,8 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
     if picked is None:
         return None
     side, breakout = picked
+    if s.reverse:  # fade the setup: tested because every 1m setup lost before fees too
+        side = "short" if side == "long" else "long"
     close, a = row["close"], row["atr"]
 
     stop_dist = max(a * s.atr_stop_mult, close * r.min_stop_pct)

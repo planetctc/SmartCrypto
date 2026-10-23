@@ -44,6 +44,7 @@ class StrategyConfig:
     rsi_period: int = 14
     rsi_low: float = 25              # reversion: long only below this RSI, short only above 100-x
     breakout_lookback: int = 20
+    reverse: bool = False            # trade the opposite side of every signal (research)
     range_lookback: int = 60         # adaptive: bars that define the range high / low
     range_trend_gap: float = 0.003   # adaptive: trend only counts when price is this far from its EMA
     volume_lookback: int = 20

@@ -606,9 +606,10 @@ def test_tune_variants_cover_every_signal_and_config_is_valid():
     import main
     from bot.config import validate
     variants = main.tune_variants()
-    assert len(variants) == 3
-    assert {v[1]["timeframe"] for v in variants} == {"1m"}
+    assert len(variants) == 12
+    assert {v[1]["timeframe"] for v in variants} == {"1m", "5m", "15m"}
     assert {v[2]["signal_type"] for v in variants} == {"combo", "adaptive"}
+    assert any(v[2].get("reverse") for v in variants)
     for _, top, change, _ in variants:
         c = load_config(ROOT / "config.yaml")
         for k, v in top.items():
@@ -1190,3 +1191,16 @@ def test_adaptive_sells_the_top_of_a_range_and_buys_the_bottom_when_no_trend():
                         "low": 98.4, "ll": 98.6})
     assert _side(strong, c)[0] == "short"   # clear downtrend: with the trend
     assert load_config(ROOT / "config_hf.yaml").strategy.signal_type == "adaptive"
+
+
+def test_reverse_trades_the_other_side_with_its_own_stop():
+    import pandas as pd
+    from bot.strategy import signal_at
+    c = cfg()
+    c.strategy.signal_type, c.strategy.volume_factor, c.strategy.trend_min_gap = "combo", 0, 0
+    row = pd.Series({"close": 99.0, "open": 99.5, "high": 100.5, "low": 98.8, "atr": 1.0,
+                     "trend": -1, "hh": 103.0, "ll": 97.0, "ema_fast": 100.0, "volume": 1.0,
+                     "vol_avg": 1.0, "trend_ema": 101.0, "trend_close": 99.0})
+    c.strategy.reverse = True
+    sig = signal_at(row, c)
+    assert sig.side == "long" and sig.stop < sig.entry < sig.take_profit
