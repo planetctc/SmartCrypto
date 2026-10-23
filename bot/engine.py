@@ -26,7 +26,7 @@ LATE_GIVEUP_MS = 3_600_000   #   market an hour after the max hold
 ENTRY_RETRY_MS = 60_000      # 盘口模式: after an unfilled limit entry wait before the next one
 PAUSE_MS = 4 * 3_600_000     # 盘口模式: a coin whose last 3+ live trades lost is paused this long
 from .structure import round_step, snapshot
-from .strategy import (TF_MS, Signal, manage_position, prepare, rsi, scales_in, signal_at,
+from .strategy import (TF_MS, Signal, manage_position, prepare, rsi, scales_in, signal_at, votes,
                        trade_plan)
 
 log = logging.getLogger("bot.engine")
@@ -548,8 +548,9 @@ class Engine:
         if sym not in cache or cache[sym][0] != bar:
             try:
                 c15 = self.lanes.get("15m") or lane_config(self.cfg, "15m")
-                df = prepare(self.broker.ohlcv(sym, "15m", HISTORY_BARS),
-                             self.broker.ohlcv(sym, "1h", c15.strategy.trend_ema * 3 + 10), c15)
+                df = votes(prepare(self.broker.ohlcv(sym, "15m", HISTORY_BARS),
+                                   self.broker.ohlcv(sym, "1h", c15.strategy.trend_ema * 3 + 10),
+                                   c15), c15)
                 val = int(df["score"].iloc[-1])
             except Exception as e:  # noqa: BLE001 - never block trading on this
                 log.warning("%s indicators not read (%s)", sym, e)
@@ -611,7 +612,9 @@ class Engine:
         if ex is None or not hasattr(ex, "fetch_long_short_ratio_history"):
             return None
         cache = self.__dict__.setdefault("_ls_cache", {})
-        slot = now // 300_000
+        # each coin on its own 5-minute clock, so they are not all read at once (429)
+        idx = self.cfg.symbols.index(sym) if sym in self.cfg.symbols else 0
+        slot = (now + idx * 300_000 // max(1, len(self.cfg.symbols))) // 300_000
         if sym not in cache or cache[sym][0] != slot:
             try:
                 hist = ex.fetch_long_short_ratio_history(sym, "5m", None, 1)
@@ -621,7 +624,7 @@ class Engine:
                 if not getattr(self, "_ls_warned", False):
                     self._ls_warned = True
                     log.warning("%s long/short ratio not read (%s)", sym, e)
-                val = None
+                val = cache[sym][1] if sym in cache else None  # keep the last good value
             cache[sym] = (slot, val)
         return cache[sym][1]
 
@@ -982,6 +985,13 @@ class Engine:
             log.info("%s signal skipped: price already ran %.10g past signal", sym, price - sig.entry)
             return
         maker = self.cfg.entry_order == "maker"
+        if maker and hasattr(self.broker, "book"):
+            # the order rests on the account's own book (demo prices differ a little from the
+            # real market the analysis reads: live 10/24 DOGE maker at the real ask was refused)
+            try:
+                flow = {**(flow or {}), **self.broker.book(sym)}
+            except Exception as e:  # noqa: BLE001
+                log.warning("%s own order book not read (%s)", sym, e)
         if maker and flow and flow.get("bid") and flow.get("ask"):
             # rest at the front of our side of the book (sell at best ask, buy at best bid):
             # fills on the next taker instead of waiting for price to come back to the close

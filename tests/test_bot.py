@@ -1705,3 +1705,12 @@ def test_crowded_funding_and_overbought_block_a_long(tmp_path):
     e._rsi = lambda sym, now: 50 + sign * 40
     e.step()
     assert not b3.opened
+
+
+def test_nine_indicators_are_read_in_normal_mode(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file, c.votes_need = ["BTC/USDT:USDT"], str(tmp_path / "s.json"), 2
+    c.strategy.signal_type = "both"
+    e = Engine(c, FakeBroker(_df_ending_in_signal(c)))
+    v = e._votes("BTC/USDT:USDT", e.broker.now_ms())
+    assert isinstance(v, int) and -9 <= v <= 9

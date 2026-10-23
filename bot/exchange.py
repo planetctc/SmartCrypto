@@ -157,6 +157,11 @@ class BitgetBroker:
         from .orderflow import live_flow
         return retry(live_flow, self.pub, symbol)
 
+    def book(self, symbol: str) -> dict:
+        """Best bid / ask on the account's own exchange (demo or live): where orders rest."""
+        b = retry(self.ex.fetch_order_book, symbol, 5)
+        return {"bid": b["bids"][0][0], "ask": b["asks"][0][0]}
+
     def now_ms(self) -> int:
         return self.ex.milliseconds()
 

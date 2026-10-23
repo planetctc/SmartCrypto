@@ -30,7 +30,7 @@ structure_min_score: 3   # 大结构（1h/4h/日线：通道方向、4h MACD 零
 structure_need: 2        # 大结构至少 +2 分站在这单一边才做（做空要 -2 分以下）
 structure_near_level: 0.0015  # 离阻力 0.15% 以内不追多、离支撑 0.15% 以内不追空，前面 0.15% 内有整数关口也不追
 leader_bars: 1           # 跟着 BTC：BTC 上一根 K 线反方向走就不做
-leader_min_move: 0.0005  # BTC 反方向超过 0.05% 才挡
+leader_min_move: 0.002   # BTC 反方向超过 0.2% 才挡
 flow_confirm: true       # 进场前看实时盘口：主动成交方向一致、前面没有大单墙
 flow_min_share: 0.55     # 主动方向至少占 55%
 overbought: 75           # 超买超卖：15 分钟 RSI 75 以上不追多，25 以下不追空
