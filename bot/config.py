@@ -111,6 +111,13 @@ class Config:
     # 快慢一起 (nick 10/23): one bot scans several entry timeframes at once (e.g. 1m 5m 15m 1h),
     # a signal on any of them opens the trade (one trade per coin); empty = only `timeframe`
     scan_timeframes: list[str] = field(default_factory=list)
+    # 实时看盘 (nick 10/24): every loop, not on candle closes - price at a support/resistance
+    # level from the big structure, with live takers and the book on one side: bounce off it or
+    # break through it. The same 全面看 checks then decide (structure, BTC, order book).
+    live_watch: bool = False
+    watch_near: float = 0.002        # "at the level" = within 0.2%
+    watch_min_share: float = 0.6     # live taker share on our side
+    watch_cooldown_s: int = 300      # one look-in per coin per 5 minutes after a trigger
     # 盘口模式 (strategy.signal_type: flow): signal from the recorded order book
     flow_window: int = 30            # seconds of taker flow
     flow_threshold: float = 0.5      # (buy - sell) / (buy + sell) at least this one way

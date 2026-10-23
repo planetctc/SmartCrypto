@@ -216,6 +216,13 @@ class Engine:
             if sym in positions:
                 with self._as_lane(self.trades[sym].tf if sym in self.trades else ""):
                     self._manage(sym, positions[sym], now)
+        if self.cfg.live_watch:
+            for sym in self.cfg.symbols:
+                if sym not in positions and sym not in self.trades and sym not in self.pending:
+                    try:
+                        self._watch(sym, now, positions)
+                    except Exception as e:  # noqa: BLE001 - one coin's live read never stops the rest
+                        log.warning("%s live watch not read (%s)", sym, e)
         for tf, scans in scanned.items():
             # one line per closed bar so the log shows the bot is looking, even with no trade
             trends = [t for t, _ in scans]
@@ -483,6 +490,54 @@ class Engine:
         if sig:
             self._try_open(sym, sig, now, positions)
         return trend, sig is not None
+
+    def _watch(self, sym: str, now: int, positions: dict[str, Position]) -> None:
+        """实时看盘: price at the big structure's support/resistance (or a round number) right
+        now, and live takers + the book pushing one way: bounce off the level or break it."""
+        if now < self.__dict__.setdefault("_watch_until", {}).get(sym, 0):
+            return
+        st = self._structure(sym, now)
+        if not st or not hasattr(self.broker, "flow"):
+            return
+        px = self.broker.price(sym)
+        near = self.cfg.watch_near
+        step = round_step(px)
+        levels = [("sup", st["sup"]), ("res", st["res"]),
+                  ("round", math.floor(px / step) * step), ("round", math.ceil(px / step) * step)]
+        at = [(k, lv) for k, lv in levels if lv > 0 and abs(px / lv - 1) < near]
+        if not at:
+            return
+        f = self.broker.flow(sym)
+        taker = f["buy_qty"] + f["sell_qty"]
+        if taker <= 0:
+            return
+        buy = f["buy_qty"] / taker
+        book = f["bid_qty5"] + f["ask_qty5"]
+        tilt = (f["bid_qty5"] - f["ask_qty5"]) / book if book else 0.0
+        side = "long" if buy >= self.cfg.watch_min_share and tilt > -0.3 else \
+            "short" if 1 - buy >= self.cfg.watch_min_share and tilt < 0.3 else None
+        if side is None:
+            return
+        sign = 1 if side == "long" else -1
+        name, lv = at[0]
+        # above the level and buyers in charge: it held (bounce) or was just broken upward
+        kind = "range" if sign * (px - lv) >= 0 and name in ("sup", "round") and side == "long" \
+            or sign * (px - lv) >= 0 and name in ("res", "round") and side == "short" else "breakout"
+        if sign * (px - lv) < 0:
+            return  # still on the wrong side of the level: wait for it to hold or break
+        r = self.cfg.risk
+        dist = min(max(abs(px - lv) + px * 0.001, px * r.min_stop_pct), px * r.max_stop_pct)
+        stop = px - sign * dist
+        tp = px + sign * dist * self.cfg.strategy.take_profit_r[-1]
+        what = {"sup": "支撑", "res": "阻力", "round": "整数关口"}[name]
+        reason = (f"{side} 看盘 {what} {lv:.10g} 主动{'买' if sign > 0 else '卖'} "
+                  f"{(buy if sign > 0 else 1 - buy):.0%} 挂单 {sign * tilt:+.2f}")
+        log.info("WATCH %s %s at %s %.10g taker %.0f%% book %+.2f", sym, side, name, lv,
+                 (buy if sign > 0 else 1 - buy) * 100, sign * tilt)
+        self._watch_until[sym] = now + self.cfg.watch_cooldown_s * 1000
+        sig = Signal(side, px, stop, tp, dist, 0.5, reason, kind=kind,
+                     book={"bid": f["bid"], "ask": f["ask"]})
+        self._try_open(sym, sig, now, positions)
 
     def _look(self, sym: str, row, trend: int, now: int) -> None:
         """What the bot sees on a coin with no signal yet (15m and 1h scans): the trend, how

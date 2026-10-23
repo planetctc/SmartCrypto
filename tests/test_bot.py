@@ -1649,3 +1649,31 @@ def test_both_ways_longs_a_new_high_and_shorts_a_new_low_against_the_trend_avera
     row = row.copy()
     row.update({"close": 94.0, "trend": 1, "open": 96.0, "high": 96.5, "low": 93.5})
     assert _side(row, c)[0] == "short"  # trend average up, still a short on a new low
+
+
+def test_live_watch_buys_a_held_support_with_buyers_in_charge_without_a_candle_signal(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["XRP/USDT:USDT"], str(tmp_path / "s.json")
+    c.live_watch, c.structure_min_score, c.structure_near_level = True, 3, 0.0
+    b = FakeBroker(_candles(300, 300_000, 0.0))  # flat: no breakout anywhere
+    px = b.price("XRP/USDT:USDT")
+    b.flow = lambda s: {"bid": px, "ask": px * 1.0001, "bid_qty5": 10, "ask_qty5": 5,
+                        "buy_qty": 8, "sell_qty": 2}
+    e = Engine(c, b)
+    e._structure = lambda sym, now: {"score": 0, "res": px * 1.05, "sup": px * 0.999}
+    e.step()
+    assert b.opened and b.opened[0][1] == "long"
+
+
+def test_live_watch_waits_when_nobody_pushes(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["XRP/USDT:USDT"], str(tmp_path / "s.json")
+    c.live_watch, c.structure_min_score = True, 3
+    b = FakeBroker(_candles(300, 300_000, 0.0))
+    px = b.price("XRP/USDT:USDT")
+    b.flow = lambda s: {"bid": px, "ask": px * 1.0001, "bid_qty5": 10, "ask_qty5": 10,
+                        "buy_qty": 5, "sell_qty": 5}
+    e = Engine(c, b)
+    e._structure = lambda sym, now: {"score": 0, "res": px * 1.05, "sup": px * 0.999}
+    e.step()
+    assert not b.opened
