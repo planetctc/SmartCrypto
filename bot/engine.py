@@ -5,6 +5,7 @@ import csv
 import json
 import logging
 import copy
+import faulthandler
 import math
 import threading
 import time
@@ -148,13 +149,22 @@ class Engine:
         log.info("started: mode=%s symbols=%s leverage=%sx margin %s-%s USDT",
                  self.cfg.mode, self.cfg.symbols, self.cfg.leverage,
                  self.cfg.min_margin_usd, self.cfg.max_margin_usd)
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        stuck = open(self.state_path.parent / "stuck.txt", "w", encoding="utf-8")
         while True:
+            # a step that takes over 2 minutes writes where it is stuck to data/stuck.txt
+            faulthandler.dump_traceback_later(120, repeat=True, file=stuck)
+            t0 = time.time()
             try:
                 self.step()
             except KeyboardInterrupt:
                 raise
             except Exception:
                 log.exception("loop error, will retry")
+            finally:
+                faulthandler.cancel_dump_traceback_later()
+            if time.time() - t0 > 60:
+                log.warning("SLOW step took %.0f s", time.time() - t0)
             time.sleep(self.cfg.loop_seconds)
 
     def step(self) -> None:
@@ -165,10 +175,16 @@ class Engine:
                 log.info("%s closed by %s pnl=%.2f", sym, why, pnl)
             b.closed_by_exchange.clear()
 
+        first = not self.last_bar
+        if first:
+            log.info("CHECK account")
         equity, free = self._balance()
         if equity <= 0:
             return  # balance unreadable/empty: do nothing rather than trip the kill switch
         positions = b.positions()
+        if first:
+            log.info("CHECK equity %.2f positions %d pending %d", equity, len(positions),
+                     len(self.pending))
         self._check_pending(now, positions)
         self._forget_closed(now, positions)
 

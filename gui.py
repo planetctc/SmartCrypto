@@ -220,6 +220,12 @@ def _friendly(line: str) -> str:
         found = f"{r[5]} 个信号" if r[5] != "0" else "没有信号"
         tf = {"1m": "1分", "5m": "5分", "15m": "15分", "1h": "1小时"}.get(r[6], r[6]) if r[6] else ""
         return (f"{t}  {tf}扫描 {r[1]} 个币：大方向向上 {r[2]}、向下 {r[3]}、不明 {r[4]}，{found}")
+    if msg == "CHECK account":
+        return f"{t}  读取账户…"
+    if r := re.match(r"CHECK equity (\S+) positions (\d+) pending (\d+)", msg):
+        return f"{t}  账户 {r[1]} USDT，持仓 {r[2]} 个，挂单 {r[3]} 个"
+    if r := re.match(r"SLOW step took (\S+) s", msg):
+        return f"{t}  ⚠ 这一轮用了 {r[1]} 秒（太慢），原因记在 data/stuck.txt"
     if r := re.match(r"SCANNING (\d+) coins on (.*)", msg):
         return f"{t}  开始扫描 {r[1]} 个币（{r[2]}），第一次要下载 K 线，稍等"
     if r := re.match(r"NEXT SCAN (\S+)", msg):
