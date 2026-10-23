@@ -478,9 +478,26 @@ class Engine:
         if sym in positions or sym in self.pending:
             return trend, False
         sig = signal_at(row, self.cfg)
+        if self.tf_ms >= TF_MS["15m"] and not sig:
+            self._look(sym, row, trend, now)
         if sig:
             self._try_open(sym, sig, now, positions)
         return trend, sig is not None
+
+    def _look(self, sym: str, row, trend: int, now: int) -> None:
+        """What the bot sees on a coin with no signal yet (15m and 1h scans): the trend, how
+        far price still is from the breakout, volume, and the big-structure score."""
+        px = float(row["close"])
+        if trend > 0:
+            need = float(row["hh"]) / px - 1
+        elif trend < 0:
+            need = px / float(row["ll"]) - 1
+        else:
+            need = float("nan")
+        vol = float(row["volume"]) / float(row["vol_avg"]) if row["vol_avg"] > 0 else 0.0
+        st = self._structure(sym, now)
+        log.info("LOOK %s %s trend %+d need %.3f%% vol %.1fx struct %s", sym, self.cfg.timeframe,
+                 trend, need * 100, vol, "-" if not st else f"{st['score']:+d}")
 
     # ---------- 盘口模式 ----------
     def _flow_step(self, now: int, positions: dict[str, Position]) -> None:
