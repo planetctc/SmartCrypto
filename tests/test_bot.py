@@ -1386,7 +1386,11 @@ def test_flow_mode_enters_on_the_order_book_burst_and_leaves_after_the_hold(tmp_
     e.feed.rows[sym][-1]["ts"] = b.now                   # recorder still live
     e.step()
     assert b.tps and b.tps[-1][3] == 100.01             # limit exit at the best ask
-    b.now += 61_000
+    e.feed.rows[sym][-1].update(ts=b.now + 5000, ask=100.05)
+    b.now += 5000
+    e.step()
+    assert len(b.tps) == 1 and not b.cancelled[1:]      # left in the queue, not chased
+    b.now += 120_000
     e.feed.rows[sym][-1]["ts"] = b.now
     e.step()
     assert b.closed == [sym]                             # not filled in a minute: market

@@ -356,7 +356,9 @@ class Engine:
         self._cancel_tp(sym, self.trades.get(sym))
         fill = self.broker.close(sym, p)
         sign = 1 if p.side == "long" else -1
-        fees = 2 * self.cfg.fees.taker * p.entry * p.qty
+        f = self.cfg.fees
+        fees = ((f.maker if self.cfg.entry_order == "maker" else f.taker) * p.entry
+                + f.taker * fill) * p.qty
         t = self.trades.pop(sym, None)
         pnl = sign * (fill - p.entry) * p.qty - fees + (t.realized if t else 0.0)
         log.info("CLOSE %s %s qty=%s @ %.10g (%s) pnl≈%.2f", sym, p.side, p.qty, fill, why, pnl)
@@ -426,23 +428,33 @@ class Engine:
             log.info("FLOWSCAN %d coins live %d signals %d", len(c.symbols), live, signals)
 
     def _flow_exit(self, sym: str, p: Position, t: Trade, now: int) -> None:
-        """After flow_hold_seconds leave with a reduce-only limit at the best price on our side
-        (maker fee, what the test assumed), moved when the touch moves; market if still open
-        after flow_exit_seconds. The exchange stop stays in place the whole time."""
+        """Near the end of the hold, rest ONE reduce-only limit at the best price on our side
+        (maker fee, what the test assumed) and leave it there; market if still open after
+        flow_exit_seconds. The exchange stop stays in place the whole time.
+
+        Live 2026-10-23: the first version re-placed the limit every time the touch moved, so
+        it was always at the back of the queue (and sometimes refused on a stale price): all 4
+        trades ended at market. A resting order that is never moved fills as soon as price
+        trades through it."""
         age = now - t.opened_ms
-        hold = self.cfg.flow_hold_seconds * 1000
-        if age < hold:
+        start = (self.cfg.flow_hold_seconds - self.cfg.flow_exit_seconds // 2) * 1000
+        if age < start:
             return
-        if age >= hold + self.cfg.flow_exit_seconds * 1000:
+        if age >= start + self.cfg.flow_exit_seconds * 1000:
             self._close(sym, p, now, "max hold time")
             return
-        f = self.feed.latest(sym, self.cfg.flow_window) if self.feed else None
-        if not f or now - f["ts"] > FRESH_MS:
+        if t.tp_order_id:
             return
-        px = f["ask"] if t.side == "long" else f["bid"]
-        if t.tp_order_id and t.exit_px == px:
+        try:
+            book = self.broker.flow(sym) if hasattr(self.broker, "flow") else None
+        except Exception as e:  # noqa: BLE001 - fall back to the recorder's last row
+            log.info("%s live book not read for exit (%s)", sym, e)
+            book = None
+        if not book or not book.get("bid"):
+            book = self.feed.latest(sym, self.cfg.flow_window) if self.feed else None
+        if not book:
             return
-        self._cancel_tp(sym, t)
+        px = book["ask"] if t.side == "long" else book["bid"]
         try:
             t.tp_order_id = self.broker.place_tp(sym, t.side, t.qty, px)
             t.exit_px = px
