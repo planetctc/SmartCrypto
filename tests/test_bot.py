@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -1317,3 +1318,86 @@ def test_full_study_uses_the_big_structure_columns(tmp_path):
                        "reclaim": 0, "score": np.arange(9) % 3})
     rep = study(d, {"BTC": st})
     assert "大结构" in rep and "✓" in rep
+
+
+class FlowBroker(FakeBroker):
+    """FakeBroker with maker entries / limit exits that fill when asked."""
+
+    def __init__(self, df):
+        super().__init__(df)
+        self.limits, self.tps, self.cancelled = {}, [], []
+
+    def open_maker(self, s, side, qty, price, stop, tp):
+        oid = f"o{len(self.limits)}"
+        self.limits[oid] = (s, side, qty, price, stop, tp)
+        return oid
+
+    def order_status(self, s, oid):
+        return ("open", 0.0, 0.0)
+
+    def cancel_order(self, s, oid):
+        self.cancelled.append(oid)
+
+    def fill(self, oid):
+        s, side, qty, price, stop, tp = self.limits[oid]
+        self.px = price
+        self.open(s, side, qty, stop, tp)
+        p = self.pos[s]  # cross margin: liquidation far beyond the 0.8% stop
+        self.pos[s] = Position(s, side, qty, p.entry, 0.0, 0, p.margin)
+
+    def place_tp(self, s, side, qty, price):
+        self.tps.append((s, side, qty, price))
+        return f"tp{len(self.tps)}"
+
+
+def _flow_rows(tmp_path, now_ms, buying=True):
+    """An hour of quiet 1-second rows, then 30 s of heavy one-sided taker volume."""
+    n = 3600
+    ts = now_ms - (n - 1 - np.arange(n)) * 1000
+    buy, sell = np.ones(n), np.ones(n)
+    (buy if buying else sell)[-30:] = 20.0
+    df = pd.DataFrame({"ts": ts, "bid": 99.99, "ask": 100.01, "bid_qty5": 12.0 if buying else 8.0,
+                       "ask_qty5": 8.0 if buying else 12.0, "bid_qty15": 30.0, "ask_qty15": 30.0,
+                       "buy_qty": buy, "sell_qty": sell, "trades": 5, "last": 100.0,
+                       "maybe_missed": 0})
+    d = tmp_path / "orderflow"
+    d.mkdir(parents=True, exist_ok=True)
+    day = datetime.fromtimestamp(now_ms / 1000, timezone.utc).strftime("%Y%m%d")
+    df.to_csv(d / f"BTC_{day}.csv", index=False)
+
+
+def test_flow_mode_enters_on_the_order_book_burst_and_leaves_after_the_hold(tmp_path):
+    c = load_config(ROOT / "config_flow.yaml")
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    b = FlowBroker(synthetic(300, seed=1))
+    b.px = 100.0
+    _flow_rows(tmp_path, b.now)
+    e = Engine(c, b)
+    e.step()
+    (oid, (sym, side, qty, price, stop, tp)), = b.limits.items()
+    assert side == "long" and price == 99.99            # rests at the best bid
+    assert 98.9 <= stop <= 99.99 * (1 - 0.008)               # 0.8% (BTC rounds to whole points)
+    b.fill(oid)
+    b.now += 1000
+    e.step()
+    assert not b.tps                                     # held: no exit yet
+    b.now += 600_000
+    _flow_rows(tmp_path / "x", b.now)                    # (feed keeps its own rows)
+    e.feed.rows[sym][-1]["ts"] = b.now                   # recorder still live
+    e.step()
+    assert b.tps and b.tps[-1][3] == 100.01             # limit exit at the best ask
+    b.now += 61_000
+    e.feed.rows[sym][-1]["ts"] = b.now
+    e.step()
+    assert b.closed == [sym]                             # not filled in a minute: market
+
+
+def test_flow_mode_needs_the_volume_burst(tmp_path):
+    c = load_config(ROOT / "config_flow.yaml")
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    c.flow_burst = 1000.0
+    b = FlowBroker(synthetic(300, seed=1))
+    b.px = 100.0
+    _flow_rows(tmp_path, b.now, buying=False)
+    Engine(c, b).step()
+    assert not b.limits

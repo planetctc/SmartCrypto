@@ -1,0 +1,111 @@
+# ============================================================
+# Bitget USDT 永续合约自动交易机器人 配置文件（盘口模式：看实时成交和挂单，放量单边就进，拿 10 分钟就走）
+# 所有金额单位都是 USDT（约等于美金）
+# API key 不要写在这里！放在环境变量里（见 README）
+# ============================================================
+
+# 运行模式:
+#   paper = 本地模拟（用真实行情，不下单，不需要 API key）
+#   demo  = Bitget 模拟盘（假钱，需要模拟盘 API key）
+#   live  = 真钱实盘（还需要设置环境变量 I_UNDERSTAND_REAL_MONEY=yes 才会启动）
+mode: demo
+
+# Bitget 账户类型（钱放在哪个账户）:
+#   auto    = 自动判断
+#   classic = 「合约」账户
+#   unified = 「统一账户」
+account_type: auto
+
+symbols:
+  - BTC/USDT:USDT
+  - ETH/USDT:USDT
+  - SOL/USDT:USDT
+  - XRP/USDT:USDT
+  - DOGE/USDT:USDT
+
+timeframe: 1m          # 进场看 1 分钟 K 线（超短线，一天上百单）
+trend_timeframe: 15m   # 大方向看 15 分钟
+
+# ---------------- 仓位和杠杆 ----------------
+capital_usd: 100       # 机器人当作账户只有 100 USDT 来算风控（模拟盘假钱很多时用）；0 = 用账户真实余额
+leverage: 100          # 杠杆倍数（逐仓）
+margin_mode: cross      # 全仓：整个账户一起扛，爆仓价离得远，止损可以放宽（isolated = 逐仓）
+min_margin_usd: 5      # 每单最少保证金（信号一般时）
+max_margin_usd: 15     # 每单最多保证金（信号强时）
+max_open_positions: 8  # 每个币最多一单，不同币可以同时开（不错过信号）
+replace_on_new_signal: false  # 不同币可以同时开，不用平掉换单
+flow_min_share: 0.45   # 盘口确认：最近成交里主动方向至少占 45%
+maker_fallback_market: false   # 挂单没成交就不进：市价进出成本 0.16%，比这个信号赚的多，只能挂单
+flow_confirm: false   # 盘口模式本身就是看盘口，不用再确认
+leader_min_move: 0.0005  # BTC 反方向走超过 0.05% 才算大盘反向（0.00% 这种不挡）
+structure_min_score: 0   # 大结构先不挡（测试里没有这个条件，先照测试跑）
+structure_near_level: 0.0015
+flow_window: 30          # 看最近 30 秒的主动成交
+flow_threshold: 0.5      # 主动买（或卖）比另一边多 50% 以上
+flow_burst: 4            # 这 30 秒成交量是平时（最近 1 小时）的 4 倍以上
+flow_hold_seconds: 600   # 拿 10 分钟
+flow_exit_seconds: 60    # 10 分钟到了挂单平仓，1 分钟还没成交就市价平  # 离阻力 0.15% 以内不追多、离支撑 0.15% 以内不追空
+leader_bars: 0   # 不看 BTC（测试里没有这个条件）
+
+# 进场方式:
+#   market = 市价单，马上成交，手续费 0.06%
+#   maker  = 挂单（只做 maker），手续费 0.02%，但价格跑掉就不成交
+entry_order: maker   # 挂在买一/卖一，手续费 0.02%
+maker_timeout_seconds: 20   # 挂 20 秒没成交就撤（信号是这几秒的，过了就不算）
+tp_order: market   # 止盈不挂单：到 10 分钟就挂单平仓（交易所上只放一个很远的保护止盈）
+
+# ---------------- 风控（减少亏损的关键） ----------------
+risk:
+  daily_max_loss_pct: 0.30     # 一天亏到当天开始资金的 30% 就全部平仓，停到第二天
+  live_only_limits: true      # 日亏上限和最低资金停止只在真钱（live）时生效；模拟盘全天跑，不卡单
+  day_reset_utc_offset: 8      # "一天"按 UTC+8（北京/新加坡/马来西亚时间）00:00 重置
+  max_loss_per_trade_usd: 10   # 单笔止损+手续费最多亏多少，超过就自动缩小仓位
+  min_equity_stop_usd: 50      # 账户总资金低于这个数，机器人完全停止（设 0 关闭）
+  max_stop_pct: 0.0100
+  min_stop_pct: 0.0080   # 保护止损 0.8%（测试是拿满 10 分钟不止损，这个只防大单边）
+  liq_buffer_pct: 0.0008       # 止损价至少要比爆仓价早 0.08%
+  maintenance_margin_rate: 0.005  # 维持保证金率（估算爆仓价用，偏保守）
+  max_consecutive_losses: 0    # 连续亏几单就暂停（0 = 不暂停，靠一天亏 30% 停止来保护）
+  pause_after_losses_minutes: 120  # 暂停 2 小时
+  cooldown_bars_after_stop: 0  # 某个币止损后马上可以再开（0 = 不等，不错过机会）
+  max_trades_per_day: 1000   # 测试 6.8 小时约 389 单/天
+
+# ---------------- 策略参数 ----------------
+strategy:
+  signal_type: flow   # 盘口模式：30 秒主动买卖 ≥50% 同一边、成交量是平时 4 倍以上、挂单不反对 → 进场
+  min_score: 5              # 综合打分：趋势、均线、MACD、KDJ、RSI、布林带、放量、K线形态、突破 9 项，净 5 项同向才开单
+  fast_ema: 20              # 顺势回踩：回踩到这条快线再收回去才进场
+  bb_period: 20             # 超买超卖反转：布林带周期
+  bb_std: 2.5               #   价格超出布林带几倍标准差才算太远
+  rsi_period: 14
+  rsi_low: 25               #   RSI 低于 25 算超卖（高于 75 算超买）
+  trend_ema: 50            # 15 分钟 EMA50 判断大方向
+  breakout_lookback: 15    # 突破最近 15 根 1 分钟 K 线的高点/低点就进场
+  range_lookback: 60       # 横盘区间看最近 60 分钟的高低点
+  range_trend_gap: 0.003   # 价格离 15 分钟 EMA50 超过 0.3% 才算有趋势，不然按横盘做
+  volume_lookback: 20
+  volume_factor: 1.0       # 突破那根 K 线成交量不低于平均就行
+  trend_min_gap: 0         # 大方向要多明确才做：价格离 EMA 至少多少（0.003 = 0.3%），0 = 不限制
+  atr_period: 14
+  atr_stop_mult: 1.0       # 止损 = 1 倍 ATR（再受上面的最大/最小止损限制）
+  breakeven_at_r: 1.0      # 赚到 1 倍止损距离后，把止损移到成本，之后开始跟踪
+  trail_atr_mult: 1.5      # 之后用 1.5 倍 ATR 跟踪止损锁利润
+  max_hold_bars: 10        # 超短线：10 分钟还没保本就平掉，不拖到接近止损（已保本的单不限时）
+
+  # 视频的做法（分批进场、补仓、分批止盈、避开整数关口）先放一边，现在是一次开满、一个止盈
+  scale_in_frac: 1.0          # 第一批占计划仓位的比例（1 = 一次开满）
+  scale_in_at_r: 0            # 补仓：反向走多少倍止损距离时补仓；0 = 不补仓
+  take_profit_r: [3.0]   # 交易所上的保护止盈 = 3 倍止损（2.4%），正常是到 10 分钟挂单平
+  take_profit_split: []       # 多档止盈时，前面几档各平多少（例如 [0.34, 0.33]）
+  avoid_round_numbers: false  # true = 止损放整数关口外面、止盈放整数关口前面
+
+
+# ---------------- 费用（回测和模拟用） ----------------
+fees:
+  taker: 0.0006          # 吃单手续费 0.06%
+  maker: 0.0002          # 挂单手续费 0.02%
+  slippage: 0.0002       # 估计滑点 0.02%
+
+loop_seconds: 2          # 每 2 秒看一次盘口
+state_file: data/state_flow.json
+log_file: data/bot_flow.log

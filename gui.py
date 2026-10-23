@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent
 IS_WIN = sys.platform == "win32"
 NO_WINDOW = 0x08000000 if IS_WIN else 0  # CREATE_NO_WINDOW
 
-MODES = {"高频模式": "config_hf.yaml", "普通模式": "config.yaml"}
+MODES = {"盘口模式": "config_flow.yaml", "高频模式": "config_hf.yaml", "普通模式": "config.yaml"}
 KEY_VARS = ("BITGET_API_KEY", "BITGET_API_SECRET", "BITGET_API_PASSPHRASE")
 MODE_NAMES = {"paper": "本地模拟", "demo": "Bitget 模拟盘", "live": "真钱实盘"}
 COINS = ("BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "PEPE", "BGB")
@@ -244,6 +244,19 @@ def _friendly(line: str) -> str:
     if r := re.match(r"CLOSE (\S+) \S+ qty=\S+ @ (\S+) \((.+)\) pnl≈(\S+)", msg):
         return (f"{t}  {coin(r[1])} 平仓 @ {r[2]}（{REASONS.get(r[3], r[3])}），"
                 f"约 {float(r[4]):+.2f} USDT")
+    if r := re.match(r"FLOWSIG (\S+) (long|short) taker (\S+) volume (\S+)x book (\S+)", msg):
+        return (f"{t}  {coin(r[1])} 盘口信号{side(r[2])}：30 秒主动{'买' if r[2] == 'long' else '卖'}"
+                f"多出 {abs(float(r[3])):.0%}，成交量是平时 {r[4]} 倍，挂单 {float(r[5]):+.2f}")
+    if r := re.match(r"FLOWSCAN (\d+) coins live (\d+) signals (\d+)", msg):
+        return f"{t}  盘口扫描 {r[1]} 个币（{r[2]} 个有实时数据），{r[3]} 个信号"
+    if r := re.match(r"FLOWFEED recording order book inside the bot for (.*)", msg):
+        return f"{t}  没有在记录盘口的币（{r[1]}），机器人自己开始记录（不用另外开「记录盘口」）"
+    if r := re.match(r"EXIT-LIMIT (\S+) \S+ qty=\S+ @ (\S+)", msg):
+        return f"{t}  {coin(r[1])} 拿满 10 分钟，挂单平仓 @ {r[2]}"
+    if r := re.match(r"(\S+) exit limit filled @ (\S+), approx pnl (\S+)", msg):
+        return f"{t}  {coin(r[1])} 挂单平仓成交 @ {r[2]}，约 {float(r[3]):+.2f} USDT"
+    if r := re.match(r"(\S+) exit limit not placed", msg):
+        return f"{t}  {coin(r[1])} 平仓挂单没挂上（价格刚动），马上再挂"
     if r := re.match(r"STRUCT (\S+) score (\S+) res (\S+) sup (\S+)", msg):
         mood = "偏多" if int(r[2]) >= 2 else "偏空" if int(r[2]) <= -2 else "震荡"
         return f"{t}  {coin(r[1])} 大结构 {r[2]} 分（{mood}），阻力 {r[3]}，支撑 {r[4]}"
@@ -327,7 +340,7 @@ class Panel(tk.Tk):
         self.proc: subprocess.Popen | None = None
         self.tune_proc: subprocess.Popen | None = None
         self.test_proc: subprocess.Popen | None = None
-        self.mode = tk.StringVar(value="高频模式")
+        self.mode = tk.StringVar(value="盘口模式")
         self.raw = tk.BooleanVar(value=False)
         st = load_settings()
         self.coin_vars = {c: tk.BooleanVar(value=c in st["coins"]) for c in COINS}

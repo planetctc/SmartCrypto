@@ -104,6 +104,12 @@ class Config:
     # out of 5) and longs right under resistance / shorts right on support; 0 = off
     structure_min_score: int = 0
     structure_near_level: float = 0.0015  # "right under" = within 0.15%
+    # 盘口模式 (strategy.signal_type: flow): signal from the recorded order book
+    flow_window: int = 30            # seconds of taker flow
+    flow_threshold: float = 0.5      # (buy - sell) / (buy + sell) at least this one way
+    flow_burst: float = 4.0          # window volume at least 4x its 1-hour average
+    flow_hold_seconds: int = 600     # then leave: limit at the best price, market if not filled
+    flow_exit_seconds: int = 60      #   within this many seconds
     entry_order: str = "market"      # "market" or "maker" (post-only limit, lower fee)
     maker_timeout_seconds: int = 60  # cancel an unfilled maker entry after this long
     # take-profit as a resting reduce-only limit order (maker fee, no slippage) instead of the
@@ -160,7 +166,8 @@ def validate(cfg: Config) -> None:
     if not 0 < r.min_stop_pct < r.max_stop_pct:
         raise ValueError("need 0 < risk.min_stop_pct < risk.max_stop_pct")
     s = cfg.strategy
-    if s.signal_type not in ("breakout", "pullback", "combo", "adaptive", "reversion", "score"):
+    if s.signal_type not in ("breakout", "pullback", "combo", "adaptive", "reversion", "score",
+                             "flow"):
         raise ValueError("strategy.signal_type must be breakout, pullback, combo, adaptive, "
                          "reversion or score")
     if not 1 <= s.min_score <= len(VOTES):

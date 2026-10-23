@@ -30,6 +30,7 @@ class Signal:
     reason: str
     votes: tuple = ()  # score signal: the indicators that agreed with the side
     kind: str = ""     # which setup fired: breakout / bounce / pullback / reversion / score
+    book: dict | None = None  # 盘口模式: best bid/ask when the signal fired (maker entry price)
 
 
 def ema(s: pd.Series, n: int) -> pd.Series:

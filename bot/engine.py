@@ -14,8 +14,10 @@ from .config import Config
 from .exchange import Position
 from .orderflow import flow_agrees
 from .risk import RiskManager, RiskState
+from .flowsignal import FRESH_MS, FlowFeed, flow_side
 from .structure import snapshot
-from .strategy import TF_MS, manage_position, prepare, scales_in, signal_at, trade_plan
+from .strategy import (TF_MS, Signal, manage_position, prepare, scales_in, signal_at,
+                       trade_plan)
 
 log = logging.getLogger("bot.engine")
 
@@ -49,6 +51,7 @@ class Trade:
     realized: float = 0.0     # profit already taken from partial closes
     tp_order_id: str = ""     # tp_order maker: id of the resting limit take-profit
     tp_tries: int = 0         # failed attempts to place it (bot watches the price after 3)
+    exit_px: float = 0.0      # 盘口模式: price of the resting limit exit after the hold time
 
 
 @dataclass
@@ -74,6 +77,8 @@ class Engine:
         self.pending: dict[str, PendingEntry] = {}
         self.last_bar: dict[str, int] = {}
         self.atr: dict[str, float] = {}
+        self.flow_mode = cfg.strategy.signal_type == "flow"
+        self.feed: FlowFeed | None = None
         self.risk = RiskManager(cfg, self._load_state())
 
     # ---------- persistence ----------
@@ -144,6 +149,10 @@ class Engine:
             self._save_state()
             return
 
+        if self.flow_mode:
+            self._flow_step(now, positions)
+            self._save_state()
+            return
         scans = []
         for sym in self.cfg.symbols:
             scans.append(self._refresh_bars(sym, now, positions))
@@ -303,14 +312,21 @@ class Engine:
             px = min((t.stop, t.take_profit), key=lambda x: abs(x - now_px)) \
                 if t.take_profit > 0 else t.stop
             fee = self.cfg.fees.maker if px == t.take_profit and self.limit_tp else self.cfg.fees.taker
+            if t.exit_px and abs(now_px - t.exit_px) < abs(now_px - t.stop):
+                px, fee = t.exit_px, self.cfg.fees.maker  # our limit exit filled
             f = self.cfg.fees
             fees = (f.maker if self.cfg.entry_order == "maker" else f.taker) * avg * t.qty \
                 + fee * px * t.qty
             pnl = sign * (px - avg) * t.qty - fees + t.realized
-            log.info("%s position gone (exchange stop/TP), approx pnl %.2f", sym, pnl)
+            limit_exit = bool(t.exit_px) and px == t.exit_px
+            if limit_exit:
+                log.info("%s exit limit filled @ %.10g, approx pnl %.2f", sym, px, pnl)
+            else:
+                log.info("%s position gone (exchange stop/TP), approx pnl %.2f", sym, pnl)
             self.risk.record_close(now, sym, pnl, pnl < 0, self.tf_ms,
                                    (f"kind:{t.kind}",) if t.kind else ())
-            self._journal(sym, t.side, avg, px, "exchange stop/TP", pnl, t.opened_ms, now, t.reason)
+            self._journal(sym, t.side, avg, px, "limit exit after hold" if limit_exit
+                          else "exchange stop/TP", pnl, t.opened_ms, now, t.reason)
 
     def _journal(self, sym: str, side: str, entry: float, exit_: float, why: str, pnl: float,
                  opened_ms: int, now: int, reason: str = "") -> None:
@@ -372,6 +388,67 @@ class Engine:
         if sig:
             self._try_open(sym, sig, now, positions)
         return trend, sig is not None
+
+    # ---------- 盘口模式 ----------
+    def _flow_step(self, now: int, positions: dict[str, Position]) -> None:
+        if self.feed is None:
+            self.feed = FlowFeed(self.state_path.parent, self.cfg.symbols)
+        feed, c = self.feed, self.cfg
+        feed.update(now)
+        feed.ensure_recorder(now, c.symbols)
+        live = signals = 0
+        for sym in c.symbols:
+            if sym in positions:
+                self._manage(sym, positions[sym], now)
+                continue
+            f = feed.latest(sym, c.flow_window)
+            if not f or now - f["ts"] > FRESH_MS:
+                continue
+            live += 1
+            if sym in self.pending or sym in self.trades:
+                continue
+            side = flow_side(f, c.flow_threshold, c.flow_burst)
+            if side is None:
+                continue
+            signals += 1
+            sign = sign_of(side)
+            mid = f["mid"]
+            stop = mid * (1 - sign * c.risk.min_stop_pct)
+            sig = Signal(side, mid, stop, 0.0, 0.0, 1.0,
+                         f"flow {f['flow']:+.2f} burst {f['burst']:.1f}x book {f['tilt']:+.2f}",
+                         kind="flow", book={"bid": f["bid"], "ask": f["ask"]})
+            log.info("FLOWSIG %s %s taker %+.2f volume %.1fx book %+.2f", sym, side, f["flow"],
+                     f["burst"], f["tilt"])
+            self._try_open(sym, sig, now, positions)
+        minute = now // 60_000
+        if getattr(self, "_flow_minute", None) != minute:
+            self._flow_minute = minute
+            log.info("FLOWSCAN %d coins live %d signals %d", len(c.symbols), live, signals)
+
+    def _flow_exit(self, sym: str, p: Position, t: Trade, now: int) -> None:
+        """After flow_hold_seconds leave with a reduce-only limit at the best price on our side
+        (maker fee, what the test assumed), moved when the touch moves; market if still open
+        after flow_exit_seconds. The exchange stop stays in place the whole time."""
+        age = now - t.opened_ms
+        hold = self.cfg.flow_hold_seconds * 1000
+        if age < hold:
+            return
+        if age >= hold + self.cfg.flow_exit_seconds * 1000:
+            self._close(sym, p, now, "max hold time")
+            return
+        f = self.feed.latest(sym, self.cfg.flow_window) if self.feed else None
+        if not f or now - f["ts"] > FRESH_MS:
+            return
+        px = f["ask"] if t.side == "long" else f["bid"]
+        if t.tp_order_id and t.exit_px == px:
+            return
+        self._cancel_tp(sym, t)
+        try:
+            t.tp_order_id = self.broker.place_tp(sym, t.side, t.qty, px)
+            t.exit_px = px
+            log.info("EXIT-LIMIT %s %s qty=%s @ %.10g (hold time up)", sym, t.side, t.qty, px)
+        except Exception as e:  # noqa: BLE001 - post-only refused as price moved: next loop
+            log.info("%s exit limit not placed (%s), trying again", sym, e)
 
     def _leader_move(self, now: int) -> float | None:
         """BTC's change over the last leader_bars closed bars (cached per bar), None if off.
@@ -487,7 +564,7 @@ class Engine:
             if sign < 0 and st["sup"] < sig.entry and sig.entry / st["sup"] - 1 < near:
                 log.info("%s signal skipped: short right on support %.10g", sym, st["sup"])
                 return
-        flow = None
+        flow = sig.book
         seen = {"kind": sig.kind, "btc": "" if move is None else f"{move * 100:+.3f}%",
                 "atr": f"{sig.atr / sig.entry * 100:.3f}%",
                 "hour": datetime.fromtimestamp(now / 1000, timezone.utc).hour}
@@ -595,6 +672,9 @@ class Engine:
             t = Trade(p.side, p.qty, p.entry, stop, stop, p.entry, p.entry, now)
             self.trades[sym] = t
             log.warning("%s adopted unknown position, managed stop %.10g", sym, stop)
+        if self.flow_mode:
+            self._flow_exit(sym, p, t, now)
+            return
         price = self.broker.price(sym)
         if self.limit_tp and t.take_profit != t.entry:
             sign = 1 if t.side == "long" else -1
