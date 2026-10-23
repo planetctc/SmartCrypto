@@ -81,6 +81,14 @@ def record_command(coins: list[str]) -> list[str]:
 RECORD_PID = ROOT / "data" / "record.pid"
 
 
+def race_command(coins: list[str], margin: float) -> list[str]:
+    return [sys.executable, str(ROOT / "main.py"), "race", "--coins", ",".join(coins),
+            "--margin", f"{margin:g}"]
+
+
+RACE_PID = ROOT / "data" / "race.pid"
+
+
 def selftest_command(config_file: str, coin: str, margin: float) -> list[str]:
     return [sys.executable, str(ROOT / "main.py"), "selftest", "--config", config_file,
             "--coins", coin, "--margin", f"{margin:g}"]
@@ -415,7 +423,10 @@ class Panel(tk.Tk):
         self.flow_btn = self._button(tools, "全面分析", BLUE, self.flowtest)
         self.flow_btn.pack(side="left", padx=(0, 8))
         self.test_btn = self._button(tools, "测试下单", BLUE, self.selftest)
-        self.test_btn.pack(side="left")
+        self.test_btn.pack(side="left", padx=(0, 8))
+        self.race_btn = self._button(tools, "赛马", BLUE, self.toggle_race)
+        self.race_btn.pack(side="left", padx=(0, 8))
+        self._button(tools, "看赛马", BLUE, self.show_race).pack(side="left")
 
         pick = tk.Frame(self, bg=BG)
         pick.pack(fill="x", padx=16, pady=(2, 4))
@@ -521,6 +532,7 @@ class Panel(tk.Tk):
             self.after_cancel(self._job)
         self.check_tune()
         self.check_record()
+        self.check_race()
         self.check_selftest()
         self._job = self.after(1500, self.refresh)
 
@@ -738,6 +750,36 @@ class Panel(tk.Tk):
         box.insert("1.0", text)
         box.configure(state="disabled")
         box.pack(fill="both", expand=True, padx=12, pady=12)
+
+    def toggle_race(self):
+        """赛马: 8 ways of trading at once on live prices, each on its own simulated account."""
+        pid = running_pid(RACE_PID)
+        if pid:
+            stop_pid(pid)
+            RACE_PID.unlink(missing_ok=True)
+            self.after(500, self.check_race)
+            return
+        coins, margin = self.choices()
+        if not coins or margin is None:
+            messagebox.showwarning("SmartCrypto", "先勾选币种，并设好每单保证金。")
+            return
+        data = ROOT / "data"
+        data.mkdir(exist_ok=True)
+        err = open(data / "race_errors.log", "w", encoding="utf-8")
+        subprocess.Popen(race_command(coins, margin), cwd=str(ROOT),
+                         env=dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8"),
+                         stdout=subprocess.DEVNULL, stderr=err, creationflags=NO_WINDOW)
+        self.after(3000, self.check_race)
+
+    def check_race(self):
+        self.race_btn.configure(text="停止赛马" if running_pid(RACE_PID) else "赛马")
+
+    def show_race(self):
+        try:
+            text = (ROOT / "data" / "race_report.txt").read_text(encoding="utf-8")
+        except OSError:
+            text = "还没有赛马结果。先按「赛马」，5 分钟后会有第一份。"
+        self._report_window("赛马", text)
 
     def toggle_record(self):
         """记录盘口: record order book + trades in the background for short-term research."""

@@ -1527,3 +1527,48 @@ def test_time_up_rests_exit_at_recent_best_instead_of_market(tmp_path):
     b.now += 3_600_000 + 1                         # an hour later still open: market
     e.step()
     assert b.closed == [sym]
+
+
+def test_race_variants_build_and_summary_ranks_them(tmp_path):
+    from bot import race
+    for name, base, over in race.VARIANTS:
+        c = race.variant_config(base, over, name, ROOT, ["BTC/USDT:USDT"], 10)
+        assert c.mode == "paper" and name in c.state_file and c.fixed_margin_usd == 10
+    d = tmp_path / "data" / "race" / race.VARIANTS[1][0]
+    d.mkdir(parents=True)
+    (d / "trades.csv").write_text("closed_utc,coin,side,entry,exit,why,pnl,minutes,signal\n"
+                                  "x,BTC,long,1,2,exchange stop/TP,2.5,3,\n", encoding="utf-8")
+    rep = race.summary(tmp_path)
+    assert rep.splitlines()[2].startswith(race.VARIANTS[1][0]) and "+2.50" in rep
+
+
+def test_race_broker_trades_and_journals_on_shared_prices(tmp_path):
+    import threading
+    from bot.race import RaceBroker
+    c = cfg()
+    c.symbols, c.state_file = ["ETH/USDT:USDT"], str(tmp_path / "s.json")
+    df = _df_ending_in_signal(c)
+
+    class Ex:
+        now = int(df.ts.iloc[-1]) + 300_000 + 1
+        markets = {"ETH/USDT:USDT": {}}
+        def milliseconds(self): return self.now
+        def amount_to_precision(self, s, q): return f"{math.floor(q * 1e4) / 1e4}"
+        def market(self, s): return {"limits": {"amount": {"min": 0.0001}}}
+
+    class Market:
+        ex, lock, px = Ex(), threading.Lock(), float(df.close.iloc[-1])
+        def price(self, s): return self.px
+        def ohlcv(self, s, tf, n): return df if tf == "5m" else resample(df, tf)
+
+    m = Market()
+    b = RaceBroker(c, m)
+    e = Engine(c, b)
+    e.step()
+    assert b.pos
+    p = b.pos["ETH/USDT:USDT"]
+    stop = b.orders["ETH/USDT:USDT"][0]
+    m.px = stop * (0.99 if p.side == "long" else 1.01)
+    m.ex.now += 1000
+    e.step()
+    assert not b.pos and (tmp_path / "trades.csv").exists()

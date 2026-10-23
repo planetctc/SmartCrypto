@@ -308,6 +308,20 @@ def cmd_flowtest(cfg, args):
     print(report)
 
 
+def cmd_race(cfg, args):
+    """赛马: 8 ways of trading at once on live prices, each on its own simulated account."""
+    import atexit
+    from bot.race import run
+    pid = Path(args.data_dir) / "race.pid"
+    pid.parent.mkdir(parents=True, exist_ok=True)
+    pid.write_text(str(os.getpid()))
+    atexit.register(lambda: pid.unlink(missing_ok=True))
+    fmt = logging.Formatter("%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s")
+    for h in logging.getLogger().handlers:  # say which racer wrote each line
+        h.setFormatter(fmt)
+    run(Path(__file__).resolve().parent, cfg.symbols if args.coins else None, args.margin)
+
+
 def cmd_record(cfg, args):
     """Record order book + trades (盘口) for the chosen coins until stopped."""
     import atexit
@@ -373,7 +387,7 @@ def main():
     from bot.config import load_config
     ap = argparse.ArgumentParser(description="SmartCrypto Bitget futures bot")
     ap.add_argument("command", choices=["download", "backtest", "compare", "tune", "run", "record",
-                                        "selftest", "flowtest"])
+                                        "selftest", "flowtest", "race"])
     ap.add_argument("--configs", nargs="+", default=["config.yaml", "config_hf.yaml"],
                     help="compare 用的配置文件")
     ap.add_argument("--config", default="config.yaml")
@@ -389,11 +403,13 @@ def main():
     cfg = load_config(args.config)
     apply_overrides(cfg, args.coins, args.margin)
     # only the trading bot writes the bot log the panel shows
-    setup_logging(cfg.log_file if args.command == "run" else str(Path(args.data_dir) / "tools.log"))
+    log_file = {"run": cfg.log_file, "race": str(Path(args.data_dir) / "race" / "race.log")}.get(
+        args.command, str(Path(args.data_dir) / "tools.log"))
+    setup_logging(log_file)
     print(BANNER)
     {"download": cmd_download, "backtest": cmd_backtest, "compare": cmd_compare,
      "tune": cmd_tune, "run": cmd_run, "record": cmd_record,
-     "selftest": cmd_selftest, "flowtest": cmd_flowtest}[args.command](cfg, args)
+     "selftest": cmd_selftest, "flowtest": cmd_flowtest, "race": cmd_race}[args.command](cfg, args)
 
 
 if __name__ == "__main__":
