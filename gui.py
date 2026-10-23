@@ -251,8 +251,13 @@ def _friendly(line: str) -> str:
         return f"{t}  盘口扫描 {r[1]} 个币（{r[2]} 个有实时数据），{r[3]} 个信号"
     if r := re.match(r"FLOWFEED recording order book inside the bot for (.*)", msg):
         return f"{t}  没有在记录盘口的币（{r[1]}），机器人自己开始记录（不用另外开「记录盘口」）"
-    if r := re.match(r"EXIT-LIMIT (\S+) \S+ qty=\S+ @ (\S+)", msg):
-        return f"{t}  {coin(r[1])} 持仓时间到，挂单平仓 @ {r[2]}"
+    if r := re.match(r"EXIT-LIMIT (\S+) \S+ qty=\S+ @ (\S+) \((.+)\)", msg):
+        how = {"time": "时间到，挂单平仓", "profit": "有赚，挂单走", "breakeven": "还没赚，挂在回本价等",
+               "late": "已拿 4 小时，挂在最近 30 分钟的最好价等", "take-profit": "挂好止盈"}
+        return f"{t}  {coin(r[1])} {how.get(r[3], '挂单平仓')} @ {r[2]}"
+    if r := re.match(r"AUTOTUNE (\S+) \| (.*)", msg):
+        tag = {"verified": "（两段都赚）", "unverified": "（还没两段都赚，只在模拟盘跑）"}.get(r[1], "")
+        return f"{t}  机器人自己重新挑了做法{tag}：{r[2]}"
     if r := re.match(r"(\S+) exit limit filled @ (\S+), approx pnl (\S+)", msg):
         return f"{t}  {coin(r[1])} 挂单平仓成交 @ {r[2]}，约 {float(r[3]):+.2f} USDT"
     if r := re.match(r"(\S+) exit limit not placed", msg):

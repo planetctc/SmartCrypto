@@ -5,6 +5,7 @@ import csv
 import json
 import logging
 import math
+import threading
 import time
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
@@ -15,6 +16,10 @@ from .exchange import Position
 from .orderflow import flow_agrees
 from .risk import RiskManager, RiskState
 from .flowsignal import FRESH_MS, FlowFeed, flow_side
+
+LATE_WINDOW_MS = 1_800_000   # 人工平法 after the max hold: best price of the last 30 minutes
+LATE_REFRESH_MS = 600_000    #   re-aimed every 10 minutes
+LATE_GIVEUP_MS = 3_600_000   #   market an hour after the max hold
 from .structure import snapshot
 from .strategy import (TF_MS, Signal, manage_position, prepare, scales_in, signal_at,
                        trade_plan)
@@ -52,6 +57,8 @@ class Trade:
     tp_order_id: str = ""     # tp_order maker: id of the resting limit take-profit
     tp_tries: int = 0         # failed attempts to place it (bot watches the price after 3)
     exit_px: float = 0.0      # 盘口模式: price of the resting limit exit after the hold time
+    exit_kind: str = ""       #   profit / breakeven / late: which 人工平法 step that exit is
+    exit_since: int = 0       #   when it was placed
 
 
 @dataclass
@@ -78,6 +85,7 @@ class Engine:
         self.last_bar: dict[str, int] = {}
         self.atr: dict[str, float] = {}
         self.flow_mode = cfg.strategy.signal_type == "flow"
+        self.flow_verified = False
         self.feed: FlowFeed | None = None
         self.risk = RiskManager(cfg, self._load_state())
 
@@ -398,6 +406,9 @@ class Engine:
         feed, c = self.feed, self.cfg
         feed.update(now)
         feed.ensure_recorder(now, c.symbols)
+        self._autotune(now)
+        # real money only on a setting that made money in both parts of the test
+        closed_for_new = c.mode == "live" and not self.flow_verified
         live = signals = 0
         for sym in c.symbols:
             if sym in positions:
@@ -407,7 +418,7 @@ class Engine:
             if not f or now - f["ts"] > FRESH_MS:
                 continue
             live += 1
-            if sym in self.pending or sym in self.trades:
+            if sym in self.pending or sym in self.trades or closed_for_new:
                 continue
             side = flow_side(f, c.flow_threshold, c.flow_burst)
             if side is None:
@@ -415,7 +426,7 @@ class Engine:
             signals += 1
             sign = sign_of(side)
             mid = f["mid"]
-            stop = mid * (1 - sign * c.risk.min_stop_pct)
+            stop = mid * (1 - sign * c.flow_stop_pct)
             sig = Signal(side, mid, stop, 0.0, 0.0, 1.0,
                          f"flow {f['flow']:+.2f} burst {f['burst']:.1f}x book {f['tilt']:+.2f}",
                          kind="flow", book={"bid": f["bid"], "ask": f["ask"]})
@@ -427,40 +438,119 @@ class Engine:
             self._flow_minute = minute
             log.info("FLOWSCAN %d coins live %d signals %d", len(c.symbols), live, signals)
 
-    def _flow_exit(self, sym: str, p: Position, t: Trade, now: int) -> None:
-        """Near the end of the hold, rest ONE reduce-only limit at the best price on our side
-        (maker fee, what the test assumed) and leave it there; market if still open after
-        flow_exit_seconds. The exchange stop stays in place the whole time.
-
-        Live 2026-10-23: the first version re-placed the limit every time the touch moved, so
-        it was always at the back of the queue (and sometimes refused on a stale price): all 4
-        trades ended at market. A resting order that is never moved fills as soon as price
-        trades through it."""
-        age = now - t.opened_ms
-        start = (self.cfg.flow_hold_seconds - self.cfg.flow_exit_seconds // 2) * 1000
-        if age < start:
+    def _autotune(self, now: int) -> None:
+        """Every flow_autotune_hours re-pick entry + exit from the recording (in a background
+        thread, the loop keeps trading meanwhile) and switch to the best."""
+        c = self.cfg
+        if c.flow_autotune_hours <= 0:
             return
-        if age >= start + self.cfg.flow_exit_seconds * 1000:
+        done = getattr(self, "_tune_done", None)
+        if done is not None:
+            self._tune_done = None
+            choice, report = done
+            path = self.state_path.parent / "autotune_report.txt"
+            try:
+                path.write_text(report, encoding="utf-8")
+            except OSError:
+                pass
+            if choice is not None:
+                c.flow_window, c.flow_threshold, c.flow_burst = (choice.window, choice.threshold,
+                                                                 choice.burst)
+                c.flow_exit, c.flow_stop_pct = choice.exit, choice.sl
+                if choice.exit == "bracket":
+                    c.flow_tp_pct = choice.tp
+                else:
+                    c.flow_hold_seconds = choice.hold
+                self.flow_verified = choice.verified
+                log.info("AUTOTUNE %s | %s", "verified" if choice.verified else "unverified",
+                         choice.describe())
+            else:
+                log.info("AUTOTUNE none | %s", report.splitlines()[0])
+        if now < getattr(self, "_tune_next", 0) or getattr(self, "_tuning", False):
+            return
+        self._tune_next = now + int(c.flow_autotune_hours * 3_600_000)
+        self._tuning = True
+
+        def work():
+            from .autotune import choose
+            from .flowtest import load
+            try:
+                self._tune_done = choose(load(self.state_path.parent))
+            except Exception as e:  # noqa: BLE001 - keep trading on the current setting
+                log.warning("auto-tune failed: %s", e)
+            finally:
+                self._tuning = False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _flow_exit(self, sym: str, p: Position, t: Trade, now: int) -> None:
+        """How a 盘口模式 trade gets out (flow_exit, picked by the auto-tune):
+          time    : at flow_hold_seconds a limit at the best price on our side; market after
+                    flow_exit_seconds more
+          manual  : at flow_hold_seconds in profit after fees -> limit at the touch; otherwise
+                    a limit at break-even, waiting for price to come back
+          bracket : limit take-profit flow_tp_pct away from the start
+        manual and bracket: after flow_max_hold_seconds a limit at the best price of the last
+        30 minutes (re-aimed every 10 minutes), market only an hour after that.
+        Exit limits are left resting, never chased tick by tick (that kept them unfilled).
+        The exchange stop (flow_stop_pct) stays on the whole time."""
+        c = self.cfg
+        age = now - t.opened_ms
+        mode = c.flow_exit
+        if mode != "bracket" and age < c.flow_hold_seconds * 1000:
+            return
+        f = self.feed.latest(sym, c.flow_window) if self.feed else None
+        if not f or now - f["ts"] > FRESH_MS:
+            return
+        sign = sign_of(t.side)
+        cost = 2 * c.fees.maker
+        touch = f["ask"] if sign > 0 else f["bid"]
+        away = "short" if sign > 0 else "long"   # round exits away from the market
+        if mode == "time":
+            if age >= (c.flow_hold_seconds + c.flow_exit_seconds) * 1000:
+                self._close(sym, p, now, "max hold time")
+            elif not t.exit_kind:
+                self._place_exit(sym, t, touch, "time", now)
+            return
+        maxh = c.flow_max_hold_seconds * 1000
+        if age >= maxh + LATE_GIVEUP_MS:
             self._close(sym, p, now, "max hold time")
             return
-        if t.tp_order_id:
+        if age >= maxh:
+            if t.exit_kind == "late" and now - t.exit_since < LATE_REFRESH_MS:
+                return
+            rows = [r for r in self.feed.rows.get(sym, []) if r["ts"] >= now - LATE_WINDOW_MS]
+            mids = [(r["bid"] + r["ask"]) / 2 for r in rows] or [touch]
+            best = max(mids) if sign > 0 else min(mids)
+            self._place_exit(sym, t, max(best, touch) if sign > 0 else min(best, touch),
+                             "late", now)
             return
-        try:
-            book = self.broker.flow(sym) if hasattr(self.broker, "flow") else None
-        except Exception as e:  # noqa: BLE001 - fall back to the recorder's last row
-            log.info("%s live book not read for exit (%s)", sym, e)
-            book = None
-        if not book or not book.get("bid"):
-            book = self.feed.latest(sym, self.cfg.flow_window) if self.feed else None
-        if not book:
+        if mode == "bracket":
+            if not t.exit_kind:
+                self._place_exit(sym, t, self._round(sym, t.entry * (1 + sign * c.flow_tp_pct),
+                                                     away), "take-profit", now)
             return
-        px = book["ask"] if t.side == "long" else book["bid"]
+        if t.exit_kind == "profit" and now - t.exit_since >= c.flow_exit_seconds * 1000:
+            self._cancel_tp(sym, t)  # price moved away from the profit exit: decide again
+            t.exit_kind = ""
+        if t.exit_kind:
+            return
+        if sign * (f["mid"] / t.entry - 1) >= cost:
+            self._place_exit(sym, t, touch, "profit", now)
+        else:
+            self._place_exit(sym, t, self._round(sym, t.entry * (1 + sign * cost), away),
+                             "breakeven", now)
+
+    def _place_exit(self, sym: str, t: Trade, px: float, kind: str, now: int) -> None:
+        self._cancel_tp(sym, t)
         try:
             t.tp_order_id = self.broker.place_tp(sym, t.side, t.qty, px)
-            t.exit_px = px
-            log.info("EXIT-LIMIT %s %s qty=%s @ %.10g (hold time up)", sym, t.side, t.qty, px)
         except Exception as e:  # noqa: BLE001 - post-only refused as price moved: next loop
             log.info("%s exit limit not placed (%s), trying again", sym, e)
+            t.exit_kind = ""
+            return
+        t.exit_px, t.exit_kind, t.exit_since = px, kind, now
+        log.info("EXIT-LIMIT %s %s qty=%s @ %.10g (%s)", sym, t.side, t.qty, px, kind)
 
     def _leader_move(self, now: int) -> float | None:
         """BTC's change over the last leader_bars closed bars (cached per bar), None if off.

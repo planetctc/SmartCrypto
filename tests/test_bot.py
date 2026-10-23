@@ -1368,7 +1368,8 @@ def _flow_rows(tmp_path, now_ms, buying=True):
 
 def test_flow_mode_enters_on_the_order_book_burst_and_leaves_after_the_hold(tmp_path):
     c = load_config(ROOT / "config_flow.yaml")
-    c.flow_hold_seconds, c.flow_exit_seconds = 600, 120
+    c.flow_hold_seconds, c.flow_exit_seconds, c.flow_exit = 600, 120, "time"
+    c.flow_autotune_hours = 0
     c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
     b = FlowBroker(synthetic(300, seed=1))
     b.px = 100.0
@@ -1400,9 +1401,66 @@ def test_flow_mode_enters_on_the_order_book_burst_and_leaves_after_the_hold(tmp_
 def test_flow_mode_needs_the_volume_burst(tmp_path):
     c = load_config(ROOT / "config_flow.yaml")
     c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
-    c.flow_burst = 1000.0
+    c.flow_burst, c.flow_autotune_hours = 1000.0, 0
     b = FlowBroker(synthetic(300, seed=1))
     b.px = 100.0
     _flow_rows(tmp_path, b.now, buying=False)
     Engine(c, b).step()
     assert not b.limits
+
+
+def _flow_engine(tmp_path, exit_mode):
+    c = load_config(ROOT / "config_flow.yaml")
+    c.symbols, c.state_file = ["XRP/USDT:USDT"], str(tmp_path / "s.json")
+    c.flow_exit, c.flow_hold_seconds, c.flow_autotune_hours = exit_mode, 600, 0
+    b = FlowBroker(synthetic(300, seed=1))
+    b.px = 100.0
+    _flow_rows(tmp_path, b.now)
+    (tmp_path / "orderflow" / next((tmp_path / "orderflow").iterdir()).name).rename(
+        tmp_path / "orderflow" / next((tmp_path / "orderflow").iterdir()).name.replace("BTC", "XRP"))
+    e = Engine(c, b)
+    e.step()
+    e.feed.started_recorder = True  # no network in tests
+    (oid, _), = b.limits.items()
+    b.fill(oid)
+    b.now += 1000
+    e.step()
+    return e, b
+
+
+def _book(e, sym, now, bid, ask):
+    """A minute of live recorder rows at this price."""
+    base = e.feed.rows[sym][-1]
+    e.feed.rows[sym] = [{**base, "ts": now - (59 - i) * 1000, "bid": bid, "ask": ask}
+                        for i in range(60)]
+
+
+def test_manual_exit_waits_for_break_even_instead_of_dumping_a_loser(tmp_path):
+    e, b = _flow_engine(tmp_path, "manual")
+    sym = "XRP/USDT:USDT"
+    b.now += 600_000
+    _book(e, sym, b.now, 99.80, 99.82)                         # losing at the hold time
+    e.step()
+    assert b.tps[-1][3] == pytest.approx(99.99 * 1.0004)       # rests at break-even
+    b.now += 3 * 3_600_000                                      # still not back: no dump
+    _book(e, sym, b.now, 99.80, 99.82)
+    e.step()
+    assert not b.closed and len(b.tps) == 1
+    b.now += 3_600_000                                          # after 4 hours
+    _book(e, sym, b.now, 99.90, 99.92)
+    e.step()
+    assert b.tps[-1][3] == pytest.approx(99.92) and not b.closed  # best of last 30 min
+
+
+def test_bracket_exit_rests_the_take_profit_right_after_the_fill(tmp_path):
+    e, b = _flow_engine(tmp_path, "bracket")
+    assert b.tps and b.tps[-1][3] == pytest.approx(99.99 * (1 + e.cfg.flow_tp_pct))
+
+
+def test_auto_tune_picks_a_setting_from_the_recording(tmp_path):
+    from bot.autotune import choose
+    from bot.flowtest import load
+    ch, report = choose(load(_orderflow_csv(tmp_path / "a", edge=True)))
+    assert ch is not None and ch.verified and "机器人自己挑" in report
+    ch, report = choose(load(tmp_path / "none"))
+    assert ch is None and "不够" in report

@@ -108,8 +108,13 @@ class Config:
     flow_window: int = 30            # seconds of taker flow
     flow_threshold: float = 0.5      # (buy - sell) / (buy + sell) at least this one way
     flow_burst: float = 4.0          # window volume at least 4x its 1-hour average
-    flow_hold_seconds: int = 600     # then leave: limit at the best price, market if not filled
-    flow_exit_seconds: int = 60      #   within this many seconds
+    flow_hold_seconds: int = 600     # then 人工平法: in profit -> out, else wait for break-even
+    flow_exit_seconds: int = 120     # a profit exit not filled this long: decide again
+    flow_max_hold_seconds: int = 14400  # after 4 hours: out at the best price of the last 30 min
+    flow_exit: str = "manual"        # time / manual (人工平法) / bracket (limit TP + stop)
+    flow_tp_pct: float = 0.002       # bracket: take-profit distance
+    flow_stop_pct: float = 0.008     # exchange stop distance
+    flow_autotune_hours: float = 2.0  # re-pick entry + exit from the recording this often (0 = off)
     entry_order: str = "market"      # "market" or "maker" (post-only limit, lower fee)
     maker_timeout_seconds: int = 60  # cancel an unfilled maker entry after this long
     # take-profit as a resting reduce-only limit order (maker fee, no slippage) instead of the

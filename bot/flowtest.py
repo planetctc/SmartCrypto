@@ -29,6 +29,10 @@ MAX_GAP_MS = 5000               # rows further apart than this are the old, too-
 MAKER_RT = 0.0004               # maker in + maker out
 TAKER_RT = 0.0012 + 0.0004      # taker in + out plus slippage
 TAKER_IN_RT = 0.0006 + 0.0002   # market in (price = the ask/bid, so the spread is counted) + limit out
+STOP = 0.008                    # bot's protective stop
+MAX_HOLD_S = 4 * 3600           # 人工平法: after 4 hours look for the nearest good exit
+LATE_WINDOW_S = 1800            #   = the best price of the last 30 minutes
+LATE_GIVEUP_S = 3600            #   not back there within another hour: out at the mid
 MAKER_WAIT_S = 20               # the bot cancels an unfilled limit entry after this long
 MIN_HOURS = 6.0
 MIN_TRADES = 30
@@ -96,8 +100,52 @@ def trades(d: pd.DataFrame, threshold: float, hold: int, intensity: float = 0) -
     return pd.DataFrame(rows, columns=["ts", "move", "spread"])
 
 
+def manual_exit(ts: np.ndarray, mid: np.ndarray, i: int, px: float, k: int, hold: int,
+                cost: float) -> tuple[float, int, str]:
+    """人工平法 from fill row i at price px: (move, exit row, how).
+    At `hold`: in profit after cost -> out. Otherwise wait for break-even (move = cost).
+    After 4 hours: out when price comes back to the best of the 30 minutes before, or at
+    the mid an hour later. A 0.8% stop (market, so taker fee) the whole time.
+    Data ending first: marked at the last mid ("open")."""
+    t0 = ts[i]
+    end = np.searchsorted(ts, t0 + (MAX_HOLD_S + LATE_GIVEUP_S) * 1000, side="right")
+    r = k * (mid[i:end] / px - 1)
+    t = ts[i:end]
+    extra = 0.0004  # taker instead of maker on a stop / forced exit
+    stop = np.flatnonzero(r <= -STOP)
+    first_stop = stop[0] if len(stop) else len(r)
+    h = np.searchsorted(t, t0 + hold * 1000)
+    if h >= len(r):
+        return (r[-1], i + len(r) - 1, "open") if first_stop >= len(r) else \
+            (-STOP - extra, i + first_stop, "stop")
+    if first_stop <= h:
+        return -STOP - extra, i + first_stop, "stop"
+    if r[h] >= cost:
+        return r[h], i + h, "profit"
+    late = np.searchsorted(t, t0 + MAX_HOLD_S * 1000)
+    be = np.flatnonzero(r[h:late] >= cost)
+    be_at = h + be[0] if len(be) else len(r)
+    if be_at < first_stop and be_at < late:
+        return cost, i + be_at, "breakeven"
+    if first_stop < late:
+        return -STOP - extra, i + first_stop, "stop"
+    if late >= len(r):
+        return r[-1], i + len(r) - 1, "open"
+    lo = np.searchsorted(t, t[late] - LATE_WINDOW_S * 1000)
+    target = r[lo:late + 1].max()
+    back = np.flatnonzero(r[late:] >= target)
+    back_at = late + back[0] if len(back) else len(r)
+    if back_at < first_stop and back_at < len(r):
+        return target, i + back_at, "late"
+    if first_stop < len(r):
+        return -STOP - extra, i + first_stop, "stop"
+    if end >= len(ts):
+        return r[-1], i + len(r) - 1, "open"
+    return r[-1] - extra, i + len(r) - 1, "late"
+
+
 def real_trades(d: pd.DataFrame, threshold: float, hold: int, intensity: float,
-                entry: str) -> tuple[pd.DataFrame, int]:
+                entry: str, manual: bool = False) -> tuple[pd.DataFrame, int]:
     """What the bot can really get: (trades, signals tried).
 
     entry "maker": buy at the bid when the signal fires (sell at the ask for a short); it only
@@ -127,13 +175,19 @@ def real_trades(d: pd.DataFrame, threshold: float, hold: int, intensity: float,
                 free_at = ts[min(end, len(ts) - 1)]
                 continue
             t_in = ts[i + 1 + through[0]]
+        if manual:
+            fi = int(np.searchsorted(ts, t_in))
+            move, j, how = manual_exit(ts, mid, fi, px, k, hold, MAKER_RT)
+            rows.append((ts[i], move, how, (ts[j] - t_in) / 60_000))
+            free_at = ts[j] + 1
+            continue
         j = np.searchsorted(ts, t_in + hold * 1000)
         if j >= len(d) or ts[j] - t_in > hold * 1500:
             free_at = t_in
             continue
-        rows.append((ts[i], k * (mid[j] / px - 1)))
+        rows.append((ts[i], k * (mid[j] / px - 1), "time", hold / 60))
         free_at = ts[j]
-    return pd.DataFrame(rows, columns=["ts", "move"]), tried
+    return pd.DataFrame(rows, columns=["ts", "move", "how", "minutes"]), tried
 
 
 def spacing(frames: dict[str, pd.DataFrame]) -> float:
@@ -209,6 +263,23 @@ def analyse(frames: dict[str, pd.DataFrame]) -> str:
                          + ("  ✓ 真实下单也赚" if ok else ""))
             if ok:
                 real_ok.append(f"看 {w} 秒、≥{th:.0%}{burst}、拿 {hold} 秒、{name}")
+        parts = [real_trades(f, th, hold, k, "maker", manual=True) for f in feats.values()]
+        tr = pd.concat([p for p, _ in parts], ignore_index=True)
+        if len(tr):
+            a, b = tr[tr.ts < cut], tr[tr.ts >= cut]
+            ok = len(a) >= 10 and len(b) >= 10 and a.move.mean() > MAKER_RT \
+                and b.move.mean() > MAKER_RT
+            n = tr["how"].value_counts()
+            lines.append(f"   挂单进、人工平法（有赚就走、没赚等回本、4 小时后找最近高点平、0.8% 止损）："
+                         f"{len(tr)} 单，挑选段 {a.move.mean() if len(a) else float('nan'):+.3%}，"
+                         f"验证段 {b.move.mean() if len(b) else float('nan'):+.3%}，成本 {MAKER_RT:.2%}"
+                         + ("  ✓ 真实下单也赚" if ok else ""))
+            lines.append(f"      有赚就走 {n.get('profit', 0)}、等到回本 {n.get('breakeven', 0)}、"
+                         f"4 小时后平 {n.get('late', 0)}、止损 {n.get('stop', 0)}、"
+                         f"数据结束还没平 {n.get('open', 0)}；平均拿 {tr.minutes.mean():.0f} 分钟，"
+                         f"不亏的单占 {(tr.move >= MAKER_RT - 1e-12).mean():.0%}")
+            if ok:
+                real_ok.append(f"看 {w} 秒、≥{th:.0%}{burst}、拿 {hold} 秒、人工平法")
     lines.append("")
     if good and not real_ok:
         lines.append("结论：价格方向看对了，但照真实下单（挂单要等价格回来、市价要多付手续费）算，"
