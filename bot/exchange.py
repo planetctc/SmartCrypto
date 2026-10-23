@@ -67,6 +67,13 @@ class BitgetBroker:
         if demo:
             self.ex.set_sandbox_mode(True)  # sends PAPTRADING: 1 -> Bitget demo account
         self.ex.load_markets()
+        # market data from the real market even on demo (live 10/24: demo candles showed
+        # volume 0.0-0.1x of normal, which blocked every signal, and the long/short ratio
+        # endpoint does not exist on demo): candles, tape, book, funding, OI, long/short
+        self.pub = self.ex
+        if demo:
+            self.pub = ccxt.bitget({"enableRateLimit": True, "options": {"defaultType": "swap"}})
+            self.pub.load_markets()
         # Bitget has classic futures accounts and unified (UTA) accounts; ccxt picks the API
         # unless config says which one holds the money
         if cfg.account_type != "auto":
@@ -140,7 +147,7 @@ class BitgetBroker:
 
     # ----- market data -----
     def ohlcv(self, symbol: str, tf: str, limit: int) -> pd.DataFrame:
-        rows = retry(self.ex.fetch_ohlcv, symbol, tf, None, limit)
+        rows = retry(self.pub.fetch_ohlcv, symbol, tf, None, limit)
         return candles_to_df(rows, tf, self.now_ms())
 
     def price(self, symbol: str) -> float:
@@ -148,7 +155,7 @@ class BitgetBroker:
 
     def flow(self, symbol: str) -> dict:
         from .orderflow import live_flow
-        return retry(live_flow, self.ex, symbol)
+        return retry(live_flow, self.pub, symbol)
 
     def now_ms(self) -> int:
         return self.ex.milliseconds()

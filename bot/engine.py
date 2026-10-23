@@ -561,7 +561,7 @@ class Engine:
         """(funding rate, open interest change over ~15 min), refreshed every 5 minutes."""
         if not (self.cfg.funding_max or self.cfg.oi_confirm):
             return None, None
-        ex = getattr(self.broker, "ex", None)
+        ex = getattr(self.broker, "pub", None) or getattr(self.broker, "ex", None)
         if ex is None:
             return None, None
         cache = self.__dict__.setdefault("_pos_cache", {})
@@ -607,7 +607,7 @@ class Engine:
         """Bitget long/short account ratio, cached 5 minutes; None if off or not available."""
         if not (self.cfg.crowd_long_max or self.cfg.crowd_short_min):
             return None
-        ex = getattr(self.broker, "ex", None)
+        ex = getattr(self.broker, "pub", None) or getattr(self.broker, "ex", None)
         if ex is None or not hasattr(ex, "fetch_long_short_ratio_history"):
             return None
         cache = self.__dict__.setdefault("_ls_cache", {})
@@ -618,7 +618,9 @@ class Engine:
                 v = hist[-1].get("longShortRatio") if hist else None
                 val = float(v) if v not in (None, "") else None
             except Exception as e:  # noqa: BLE001
-                log.warning("%s long/short ratio not read (%s)", sym, e)
+                if not getattr(self, "_ls_warned", False):
+                    self._ls_warned = True
+                    log.warning("%s long/short ratio not read (%s)", sym, e)
                 val = None
             cache[sym] = (slot, val)
         return cache[sym][1]
