@@ -899,7 +899,8 @@ class Engine:
         if not ok:
             log.info("%s signal skipped: %s", sym, why)
             return
-        move = self._leader_move(now)
+        # BTC's own move is already in its own signal: the leader check is for the other coins
+        move = None if sym == self.cfg.leader_symbol else self._leader_move(now)
         if move is not None and sign_of(sig.side) * move < -self.cfg.leader_min_move:
             log.info("%s signal skipped: BTC moving against it (%+.2f%% in %d bars)", sym,
                      move * 100, self.cfg.leader_bars)
