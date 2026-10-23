@@ -87,6 +87,27 @@ def race_command(coins: list[str], margin: float) -> list[str]:
 
 
 RACE_PID = ROOT / "data" / "race.pid"
+UPDATE_URL = "https://github.com/planetctc/SmartCrypto/archive/refs/heads/main.zip"
+
+
+def update_from_github(root: Path, url: str = UPDATE_URL) -> int:
+    """Overwrite the program files with the latest main branch; never touches data/."""
+    import io
+    import urllib.request
+    import zipfile
+    with urllib.request.urlopen(url, timeout=60) as r:
+        blob = r.read()
+    n = 0
+    with zipfile.ZipFile(io.BytesIO(blob)) as z:
+        for info in z.infolist():
+            rel = Path(*Path(info.filename).parts[1:])  # drop "SmartCrypto-main/"
+            if info.is_dir() or not rel.parts or rel.parts[0] == "data" or ".." in rel.parts:
+                continue
+            dest = root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(z.read(info))
+            n += 1
+    return n
 
 
 def selftest_command(config_file: str, coin: str, margin: float) -> list[str]:
@@ -468,6 +489,7 @@ class Panel(tk.Tk):
         self.flow_btn.pack(side="left", padx=(0, 8))
         self.test_btn = self._button(tools, "测试下单", BLUE, self.selftest)
         self.test_btn.pack(side="left", padx=(0, 8))
+        self._button(tools, "更新", BLUE, self.update_code).pack(side="left", padx=(0, 8))
 
         pick = tk.Frame(self, bg=BG)
         pick.pack(fill="x", padx=16, pady=(2, 4))
@@ -666,6 +688,17 @@ class Panel(tk.Tk):
         self.proc = None  # stopped on purpose: check_started must not report a failure
         pid_file.unlink(missing_ok=True)
         self.after(500, lambda: self.refresh(force_log=True))
+
+    def update_code(self):
+        """更新: download the latest version from GitHub over this folder (data/ is kept)."""
+        if not messagebox.askyesno("SmartCrypto", "从 GitHub 下载最新版覆盖程序文件？\n（data 里的交易记录不会动）"):
+            return
+        try:
+            n = update_from_github(ROOT)
+        except Exception as e:  # noqa: BLE001 - show any download/unzip problem
+            messagebox.showerror("SmartCrypto", f"更新失败：{e}")
+            return
+        messagebox.showinfo("SmartCrypto", f"已更新 {n} 个文件。\n请先停止机器人，关掉面板再重新打开。")
 
     def tune(self):
         """回测比较: download recent real candles and compare a few ways of trading."""
