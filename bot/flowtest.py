@@ -24,10 +24,12 @@ import pandas as pd
 WINDOWS = (10, 30, 60)          # seconds of taker flow
 THRESHOLDS = (0.5, 0.7)         # how one-sided the flow must be
 INTENSITY = (0, 2, 4)           # window volume vs its 1-hour average (0 = any; 4 = a burst)
-HOLDS = (60, 180, 600)          # seconds to hold
+HOLDS = (60, 180, 600, 1200, 1800)  # seconds to hold
 MAX_GAP_MS = 5000               # rows further apart than this are the old, too-coarse recording
 MAKER_RT = 0.0004               # maker in + maker out
 TAKER_RT = 0.0012 + 0.0004      # taker in + out plus slippage
+TAKER_IN_RT = 0.0006 + 0.0002   # market in (price = the ask/bid, so the spread is counted) + limit out
+MAKER_WAIT_S = 20               # the bot cancels an unfilled limit entry after this long
 MIN_HOURS = 6.0
 MIN_TRADES = 30
 
@@ -94,6 +96,46 @@ def trades(d: pd.DataFrame, threshold: float, hold: int, intensity: float = 0) -
     return pd.DataFrame(rows, columns=["ts", "move", "spread"])
 
 
+def real_trades(d: pd.DataFrame, threshold: float, hold: int, intensity: float,
+                entry: str) -> tuple[pd.DataFrame, int]:
+    """What the bot can really get: (trades, signals tried).
+
+    entry "maker": buy at the bid when the signal fires (sell at the ask for a short); it only
+    fills if price comes back THROUGH that level within MAKER_WAIT_S (a later bid below it),
+    and then the hold starts from the fill. Unfilled: the next signal may try again.
+    entry "taker": buy at the ask right away. Exit at the mid `hold` seconds later."""
+    flow, tilt, mid = d["flow"].to_numpy(), d["tilt"].to_numpy(), d["mid"].to_numpy()
+    bid, ask = d["bid"].to_numpy(), d["ask"].to_numpy()
+    ts, burst = d["ts"].to_numpy(), d["burst"].to_numpy()
+    strong = burst >= intensity
+    side = np.where(strong & (flow >= threshold) & (tilt >= 0), 1,
+                    np.where(strong & (flow <= -threshold) & (tilt <= 0), -1, 0))
+    rows, tried, free_at = [], 0, -1
+    for i in np.flatnonzero(side):
+        if ts[i] < free_at:
+            continue
+        tried += 1
+        k = side[i]
+        if entry == "taker":
+            px, t_in = (ask[i] if k > 0 else bid[i]), ts[i]
+        else:
+            px = bid[i] if k > 0 else ask[i]
+            end = np.searchsorted(ts, ts[i] + MAKER_WAIT_S * 1000, side="right")
+            seg = slice(i + 1, end)
+            through = np.flatnonzero(bid[seg] < px) if k > 0 else np.flatnonzero(ask[seg] > px)
+            if not len(through):
+                free_at = ts[min(end, len(ts) - 1)]
+                continue
+            t_in = ts[i + 1 + through[0]]
+        j = np.searchsorted(ts, t_in + hold * 1000)
+        if j >= len(d) or ts[j] - t_in > hold * 1500:
+            free_at = t_in
+            continue
+        rows.append((ts[i], k * (mid[j] / px - 1)))
+        free_at = ts[j]
+    return pd.DataFrame(rows, columns=["ts", "move"]), tried
+
+
 def spacing(frames: dict[str, pd.DataFrame]) -> float:
     """Median seconds between rows of one coin."""
     gaps = [np.median(np.diff(f["ts"].to_numpy())) / 1000 for f in frames.values() if len(f) > 1]
@@ -145,7 +187,36 @@ def analyse(frames: dict[str, pd.DataFrame]) -> str:
                      f"平均买卖价差 {spread:.3%}")
         if ok:
             good.append((w, th, k, hold))
+    lines += ["", "照机器人真实下单再算一次（前 3 组）：", ""]
+    real_ok = []
+    for w, th, k, hold, *_ in results[:3]:
+        feats = {c: features(f, w) for c, f in frames.items()}
+        burst = f"、成交量 {k} 倍" if k else ""
+        lines.append(f"看 {w} 秒、≥{th:.0%}{burst}、拿 {hold} 秒：")
+        for entry, cost, name in (("maker", MAKER_RT, "挂单进（价格回来才成交）"),
+                                  ("taker", TAKER_IN_RT, "市价进、挂单出")):
+            parts = [real_trades(f, th, hold, k, entry) for f in feats.values()]
+            tr = pd.concat([p for p, _ in parts], ignore_index=True)
+            tried = sum(n for _, n in parts)
+            if tr.empty:
+                lines.append(f"   {name}：{tried} 次信号，一单都没成交")
+                continue
+            a, b = tr[tr.ts < cut], tr[tr.ts >= cut]
+            ok = len(a) >= 10 and len(b) >= 10 and a.move.mean() > cost and b.move.mean() > cost
+            lines.append(f"   {name}：{tried} 次信号成交 {len(tr)} 单，挑选段 "
+                         f"{a.move.mean() if len(a) else float('nan'):+.3%}，验证段 "
+                         f"{b.move.mean() if len(b) else float('nan'):+.3%}，成本 {cost:.2%}"
+                         + ("  ✓ 真实下单也赚" if ok else ""))
+            if ok:
+                real_ok.append(f"看 {w} 秒、≥{th:.0%}{burst}、拿 {hold} 秒、{name}")
     lines.append("")
+    if good and not real_ok:
+        lines.append("结论：价格方向看对了，但照真实下单（挂单要等价格回来、市价要多付手续费）算，"
+                     "还盖不过成本。")
+        return "\n".join(lines)
+    if real_ok:
+        lines.append("结论：真实下单也赚的是：" + "；".join(real_ok) + "。把这个结果发给 Claude。")
+        return "\n".join(lines)
     if good:
         w, th, k, hold = good[0]
         lines.append(f"结论：有用。最好的是看 {w} 秒成交、主动方向 ≥{th:.0%}"
