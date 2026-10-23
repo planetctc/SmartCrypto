@@ -242,10 +242,18 @@ class Engine:
                 self._warned_zero = True
                 log.warning("账户余额读到 0，机器人不会开单。请确认模拟盘合约账户里有 USDT。")
             return 0.0, 0.0
-        if st.equity_baseline <= 0:
+        # demo: every start counts from a fresh 100 (live 10/24: other runs on the same demo
+        # account had moved it more than 100 below the old baseline, the virtual account read
+        # below 0 and the bot silently stopped trading)
+        rebase = self.cfg.mode != "live" and not getattr(self, "_rebased", False)
+        if st.equity_baseline <= 0 or rebase:
+            self._rebased = True
             st.equity_baseline = equity
             log.info("capital_usd=%.2f: real equity %.2f taken as baseline", cap, equity)
         virtual = cap + (equity - st.equity_baseline)
+        if virtual <= 0 and not getattr(self, "_warned_zero", False):
+            self._warned_zero = True
+            log.warning("账户余额读到 0，机器人不会开单。请确认模拟盘合约账户里有 USDT。")
         return virtual, min(free, virtual - (equity - free))
 
     # ---------- maker entries ----------

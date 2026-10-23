@@ -1626,3 +1626,13 @@ def test_fast_and_slow_timeframes_are_scanned_together(tmp_path):
 def test_normal_mode_scans_fast_and_slow():
     c = load_config(ROOT / "config.yaml")
     assert set(c.scan_timeframes) == {"1m", "5m", "15m", "1h"}
+
+
+def test_demo_start_counts_from_fresh_capital_even_after_old_losses(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file, c.capital_usd, c.mode = ["BTC/USDT:USDT"], str(tmp_path / "s.json"), 100, "demo"
+    b = FakeBroker(_df_ending_in_signal(c))
+    e = Engine(c, b)
+    e.risk.state.equity_baseline = b.balance()[0] + 500  # account fell 500 since the old baseline
+    equity, _ = e._balance()
+    assert equity == pytest.approx(100)
