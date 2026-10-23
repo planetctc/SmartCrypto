@@ -26,6 +26,9 @@ def cfg() -> Config:
     c.timeframe, c.trend_timeframe = "5m", "1h"
     c.entry_order, c.maker_timeout_seconds, c.tp_order = "market", 60, "market"
     c.risk.live_only_limits = False  # the limit mechanics below are what real money runs with
+    # 全面看 filters off: these tests are about order mechanics (filters have their own tests)
+    c.structure_min_score = c.structure_need = c.leader_bars = 0
+    c.flow_confirm = False
     return c
 
 
@@ -1126,7 +1129,7 @@ def test_unfilled_limit_entry_falls_back_to_market_when_price_has_not_run(tmp_pa
 def test_limit_entry_rests_at_best_ask_for_a_short(tmp_path):
     c = cfg()
     c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
-    c.entry_order, c.flow_confirm = "maker", True
+    c.entry_order, c.flow_confirm, c.flow_min_share = "maker", True, 0.5
     b = FakeMakerBroker(_df_ending_in_signal(c))
     e = Engine(c, b)
     px = b.px
@@ -1140,7 +1143,7 @@ def test_limit_entry_rests_at_best_ask_for_a_short(tmp_path):
 def test_stop_keeps_min_distance_from_the_real_entry_price(tmp_path):
     c = cfg()
     c.symbols, c.state_file = ["XRP/USDT:USDT"], str(tmp_path / "s.json")
-    c.entry_order, c.flow_confirm = "maker", True
+    c.entry_order, c.flow_confirm, c.flow_min_share = "maker", True, 0.5
     b = FakeMakerBroker(_df_ending_in_signal(c))
     px = b.px
     b.flow = lambda s: {"bid": px * 0.998, "ask": px * 1.002, "bid_qty5": 1, "ask_qty5": 1,
@@ -1572,3 +1575,29 @@ def test_race_broker_trades_and_journals_on_shared_prices(tmp_path):
     m.ex.now += 1000
     e.step()
     assert not b.pos and (tmp_path / "trades.csv").exists()
+
+
+def test_comprehensive_view_needs_structure_with_the_trade(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    df = _df_ending_in_signal(c)
+    b = FakeBroker(df)
+    Engine(c, b).step()
+    sign = 1 if b.opened[0][1] == "long" else -1
+    c.structure_min_score, c.structure_need, c.structure_near_level = 3, 2, 0.0
+    opened = []
+    for score in (1, 3):  # +1 only: not enough on our side; +3: with it
+        b = FakeBroker(df)
+        c.state_file = str(tmp_path / f"s{score}.json")
+        e = Engine(c, b)
+        e._structure = lambda sym, now, s=score: {"score": s * sign, "res": 1e12, "sup": 1e-12}
+        e.step()
+        opened.append(len(b.opened))
+    assert opened == [0, 1]
+
+
+def test_comprehensive_configs_look_at_everything():
+    for path in ("config.yaml", "config_hf.yaml"):
+        c = load_config(ROOT / path)
+        assert c.structure_min_score and c.structure_need >= 2
+        assert c.flow_confirm and c.flow_min_share >= 0.55 and c.leader_bars

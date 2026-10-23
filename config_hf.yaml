@@ -34,10 +34,11 @@ min_margin_usd: 5      # 每单最少保证金（信号一般时）
 max_margin_usd: 15     # 每单最多保证金（信号强时）
 max_open_positions: 8  # 每个币最多一单，不同币可以同时开（不错过信号）
 replace_on_new_signal: false  # 不同币可以同时开，不用平掉换单
-flow_min_share: 0.45   # 盘口确认：最近成交里主动方向至少占 45%
+flow_min_share: 0.55   # 盘口确认：最近成交里主动方向至少占 55%
 maker_fallback_market: true   # 挂单 1 分钟没成交就改市价进（价格没跑远、没过止损才进），不错过信号
 flow_confirm: true   # K 线出信号后再看实时盘口：主动成交方向要跟信号一致、前面没有大单墙，才开单
 leader_min_move: 0.0005  # BTC 反方向走超过 0.05% 才算大盘反向（0.00% 这种不挡）
+structure_need: 2        # 大结构至少 +2 分站在这单一边才做
 structure_min_score: 3   # 大结构（1h/4h/日线：通道方向、4h MACD 零轴、日线布林中轨、假突破/放量收回）5 分里 3 分以上反方向就不做（0 = 关闭）
 structure_near_level: 0.0015  # 离阻力 0.15% 以内不追多、离支撑 0.15% 以内不追空
 leader_bars: 3       # 跟着 BTC 走：BTC 最近 3 分钟在涨就不做空、在跌就不做多（0 = 关闭）

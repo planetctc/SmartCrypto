@@ -22,7 +22,7 @@ LATE_REFRESH_MS = 600_000    #   re-aimed every 10 minutes
 LATE_GIVEUP_MS = 3_600_000   #   market an hour after the max hold
 ENTRY_RETRY_MS = 60_000      # 盘口模式: after an unfilled limit entry wait before the next one
 PAUSE_MS = 4 * 3_600_000     # 盘口模式: a coin whose last 3+ live trades lost is paused this long
-from .structure import snapshot
+from .structure import round_step, snapshot
 from .strategy import (TF_MS, Signal, manage_position, prepare, scales_in, signal_at,
                        trade_plan)
 
@@ -691,12 +691,21 @@ class Engine:
             if sign * st["score"] <= -self.cfg.structure_min_score:
                 log.info("%s signal skipped: structure against it (score %+d)", sym, st["score"])
                 return
+            if sign * st["score"] < self.cfg.structure_need:
+                log.info("%s signal skipped: structure not with it (score %+d, need %+d)", sym,
+                         st["score"], sign * self.cfg.structure_need)
+                return
             near = self.cfg.structure_near_level
             if sign > 0 and st["res"] > sig.entry and st["res"] / sig.entry - 1 < near:
                 log.info("%s signal skipped: long right under resistance %.10g", sym, st["res"])
                 return
             if sign < 0 and st["sup"] < sig.entry and sig.entry / st["sup"] - 1 < near:
                 log.info("%s signal skipped: short right on support %.10g", sym, st["sup"])
+                return
+            step = round_step(sig.entry)
+            level = (sig.entry // step + (1 if sign > 0 else 0)) * step  # next round number ahead
+            if level > 0 and sign * (level - sig.entry) / sig.entry < near and level != sig.entry:
+                log.info("%s signal skipped: round number %.10g right ahead", sym, level)
                 return
         flow = sig.book
         seen = {"kind": sig.kind, "btc": "" if move is None else f"{move * 100:+.3f}%",

@@ -25,28 +25,26 @@ from .strategy import TF_MS
 log = logging.getLogger("bot.race")
 
 # (name, base config, overrides)  - overrides: "a.b" for nested fields
+M15 = {"timeframe": "15m", "trend_timeframe": "1h", "maker_timeout_seconds": 900,
+       "strategy.max_hold_bars": 16}
+M5 = {"timeframe": "5m", "trend_timeframe": "1h", "maker_timeout_seconds": 300,
+      "strategy.max_hold_bars": 48}
+# 只看 K 线, kept only as the yardstick that shows what 全面看 adds
+KLINE_ONLY = {"structure_min_score": 0, "structure_need": 0, "leader_bars": 0,
+              "flow_confirm": False}
+
+# every racer looks at everything (nick 10/23: 看盘要全面, 没有的等于非): 1h/4h/daily structure
+# leaning with the trade, no support/resistance or round number right ahead, BTC not against
+# it, live order book with it. They differ only in entry timeframe and how fast they take profit.
 VARIANTS = [
-    ("1h突破", "config.yaml", {}),
-    ("1h突破+大结构", "config.yaml", {"structure_min_score": 3}),
-    ("15分突破", "config.yaml", {"timeframe": "15m", "trend_timeframe": "1h",
-                                "maker_timeout_seconds": 900, "strategy.max_hold_bars": 16}),
-    ("15分突破+大结构", "config.yaml", {"timeframe": "15m", "trend_timeframe": "1h",
-                                    "maker_timeout_seconds": 900, "strategy.max_hold_bars": 16,
-                                    "structure_min_score": 3}),
-    ("15分反着做", "config.yaml", {"timeframe": "15m", "trend_timeframe": "1h",
-                                 "maker_timeout_seconds": 900, "strategy.max_hold_bars": 16,
-                                 "strategy.reverse": True}),
-    # everything at once: 1h/4h/daily structure, BTC's direction, live order book confirming
-    ("15分全面看", "config.yaml", {"timeframe": "15m", "trend_timeframe": "1h",
-                                 "maker_timeout_seconds": 900, "strategy.max_hold_bars": 16,
-                                 "structure_min_score": 3, "flow_confirm": True,
-                                 "flow_min_share": 0.55, "leader_bars": 3,
-                                 "leader_min_move": 0.0005}),
-    ("5分突破+大结构", "config.yaml", {"timeframe": "5m", "trend_timeframe": "1h",
-                                   "maker_timeout_seconds": 300, "strategy.max_hold_bars": 48,
-                                   "structure_min_score": 3}),
-    ("1分高频", "config_hf.yaml", {"strategy.late_exit": True}),
-    ("1分高频+大结构", "config_hf.yaml", {"strategy.late_exit": True, "structure_min_score": 3}),
+    ("1h全面看", "config.yaml", {}),
+    ("1h全面看·止盈1R", "config.yaml", {"strategy.take_profit_r": [1.0]}),
+    ("15分全面看", "config.yaml", dict(M15)),
+    ("15分全面看·止盈1R", "config.yaml", {**M15, "strategy.take_profit_r": [1.0]}),
+    ("5分全面看", "config.yaml", dict(M5)),
+    ("5分全面看·止盈1R", "config.yaml", {**M5, "strategy.take_profit_r": [1.0]}),
+    ("1分全面看", "config_hf.yaml", {"strategy.late_exit": True}),
+    ("对照：15分只看K线", "config.yaml", {**M15, **KLINE_ONLY}),
 ]
 
 
@@ -160,9 +158,11 @@ def run(root: Path, symbols=None, margin=None) -> None:
     market = SharedMarket()
     race_dir = root / "data" / "race"
     race_dir.mkdir(parents=True, exist_ok=True)
-    started = race_dir / "started.txt"
-    if not started.exists():
-        started.write_text(str(time.time()))
+    started, names = race_dir / "started.txt", race_dir / "variants.txt"
+    now_names = "\n".join(n for n, *_ in VARIANTS)
+    if not started.exists() or not names.exists() or names.read_text(encoding="utf-8") != now_names:
+        started.write_text(str(time.time()))  # new set of racers: count hours from now
+        names.write_text(now_names, encoding="utf-8")
     for name, base, overrides in VARIANTS:
         cfg = variant_config(base, overrides, name, root, symbols, margin)
         eng = Engine(cfg, RaceBroker(cfg, market))

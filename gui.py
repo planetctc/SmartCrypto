@@ -279,12 +279,16 @@ def _friendly(line: str) -> str:
     if r := re.match(r"(\S+) signal skipped: (.*)", msg):
         if m := re.match(r"structure against it \(score (\S+)\)", r[2]):
             return f"{t}  {coin(r[1])} 有信号但没开单：1h/4h/日线大结构反方向（{m[1]} 分）"
+        if m := re.match(r"structure not with it \(score (\S+), need (\S+)\)", r[2]):
+            return f"{t}  {coin(r[1])} 有信号但没开单：大结构 {m[1]} 分，不够站在这边（要 {m[2]}）"
+        if m := re.match(r"round number (\S+) right ahead", r[2]):
+            return f"{t}  {coin(r[1])} 有信号但没开单：前面就是整数关口 {m[1]}，不追"
         if m := re.match(r"long right under resistance (\S+)", r[2]):
             return f"{t}  {coin(r[1])} 有信号但没开单：离阻力 {m[1]} 太近，不追多"
         if m := re.match(r"short right on support (\S+)", r[2]):
             return f"{t}  {coin(r[1])} 有信号但没开单：离支撑 {m[1]} 太近，不追空"
         if m := re.match(r"BTC moving against it \((\S+)% in (\d+) bars\)", r[2]):
-            return (f"{t}  {coin(r[1])} 有信号但没开单：BTC 最近 {m[2]} 分钟 {float(m[1]):+.2f}%，"
+            return (f"{t}  {coin(r[1])} 有信号但没开单：BTC 最近 {m[2]} 根K线 {float(m[1]):+.2f}%，"
                     f"大盘在反方向走")
         if m := re.match(r"free balance (\S+) too small", r[2]):
             return f"{t}  {coin(r[1])} 有信号但没开单：可用余额只剩 {m[1]}"

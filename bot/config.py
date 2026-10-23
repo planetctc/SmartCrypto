@@ -106,6 +106,8 @@ class Config:
     # out of 5) and longs right under resistance / shorts right on support; 0 = off
     structure_min_score: int = 0
     structure_near_level: float = 0.0015  # "right under" = within 0.15%
+    # 全面看 (nick 10/23: 看盘要全面): structure must also lean WITH the trade by at least this
+    structure_need: int = 0
     # 盘口模式 (strategy.signal_type: flow): signal from the recorded order book
     flow_window: int = 30            # seconds of taker flow
     flow_threshold: float = 0.5      # (buy - sell) / (buy + sell) at least this one way
