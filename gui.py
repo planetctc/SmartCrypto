@@ -220,6 +220,8 @@ def _friendly(line: str) -> str:
         found = f"{r[5]} 个信号" if r[5] != "0" else "没有信号"
         tf = {"1m": "1分", "5m": "5分", "15m": "15分", "1h": "1小时"}.get(r[6], r[6]) if r[6] else ""
         return (f"{t}  {tf}扫描 {r[1]} 个币：大方向向上 {r[2]}、向下 {r[3]}、不明 {r[4]}，{found}")
+    if r := re.match(r"SCANNING (\d+) coins on (.*)", msg):
+        return f"{t}  开始扫描 {r[1]} 个币（{r[2]}），第一次要下载 K 线，稍等"
     if r := re.match(r"NEXT SCAN (\S+)", msg):
         at = datetime.fromisoformat(r[1]).astimezone().strftime("%H:%M")
         return f"{t}  下次扫描 {at}（中间每几秒照看持仓和挂单）"
@@ -364,6 +366,10 @@ class Panel(tk.Tk):
         self.proc: subprocess.Popen | None = None
         self.tune_proc: subprocess.Popen | None = None
         self.test_proc: subprocess.Popen | None = None
+        race = running_pid(RACE_PID)  # 赛马 removed (nick 10/23): stop one still running
+        if race:
+            stop_pid(race)
+        RACE_PID.unlink(missing_ok=True)
         self.mode = tk.StringVar(value="普通模式")
         self.raw = tk.BooleanVar(value=False)
         st = load_settings()
@@ -432,9 +438,6 @@ class Panel(tk.Tk):
         self.flow_btn.pack(side="left", padx=(0, 8))
         self.test_btn = self._button(tools, "测试下单", BLUE, self.selftest)
         self.test_btn.pack(side="left", padx=(0, 8))
-        self.race_btn = self._button(tools, "赛马", BLUE, self.toggle_race)
-        self.race_btn.pack(side="left", padx=(0, 8))
-        self._button(tools, "看赛马", BLUE, self.show_race).pack(side="left")
 
         pick = tk.Frame(self, bg=BG)
         pick.pack(fill="x", padx=16, pady=(2, 4))
@@ -540,7 +543,6 @@ class Panel(tk.Tk):
             self.after_cancel(self._job)
         self.check_tune()
         self.check_record()
-        self.check_race()
         self.check_selftest()
         self._job = self.after(1500, self.refresh)
 

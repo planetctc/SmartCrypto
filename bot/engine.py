@@ -189,6 +189,8 @@ class Engine:
         # slowest timeframe first: when two agree on the same coin the bigger picture opens it
         tfs = sorted({self.cfg.timeframe, *self.lanes}, key=lambda x: -TF_MS[x])
         scanned = {}
+        if not self.last_bar:
+            log.info("SCANNING %d coins on %s", len(self.cfg.symbols), " ".join(tfs))
         for sym in self.cfg.symbols:
             for tf in tfs:
                 with self._as_lane(tf):
