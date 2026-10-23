@@ -44,6 +44,8 @@ class StrategyConfig:
     rsi_period: int = 14
     rsi_low: float = 25              # reversion: long only below this RSI, short only above 100-x
     breakout_lookback: int = 20
+    range_lookback: int = 60         # adaptive: bars that define the range high / low
+    range_trend_gap: float = 0.003   # adaptive: trend only counts when price is this far from its EMA
     volume_lookback: int = 20
     volume_factor: float = 1.2
     trend_min_gap: float = 0.0       # only trade when the trend close is this far from its EMA
@@ -153,8 +155,9 @@ def validate(cfg: Config) -> None:
     if not 0 < r.min_stop_pct < r.max_stop_pct:
         raise ValueError("need 0 < risk.min_stop_pct < risk.max_stop_pct")
     s = cfg.strategy
-    if s.signal_type not in ("breakout", "pullback", "combo", "reversion", "score"):
-        raise ValueError("strategy.signal_type must be breakout, pullback, combo, reversion or score")
+    if s.signal_type not in ("breakout", "pullback", "combo", "adaptive", "reversion", "score"):
+        raise ValueError("strategy.signal_type must be breakout, pullback, combo, adaptive, "
+                         "reversion or score")
     if not 1 <= s.min_score <= len(VOTES):
         raise ValueError(f"strategy.min_score must be 1..{len(VOTES)}")
     if not 0 < s.scale_in_frac <= 1 or s.scale_in_at_r < 0:

@@ -107,18 +107,21 @@ def tune_variants():
     """(name, top-level config changes, strategy changes, show indicators) for every
     combination the panel compares.
 
-    5m-30m signals of every kind lost in 90 days of real data; only the 1h breakout made
-    money in both parts. To get more trades out of it, this round runs the breakout on 1h
-    and 30m bars over every ticked coin and keeps the coins that made money in the first part.
+    This round compares the 1-minute scalping signals live demo has been running: going with
+    the 15-minute trend only (combo), reading the market first (adaptive: trend -> with it,
+    sideways -> sell the range top / buy the bottom), and range trading only. The order book
+    and BTC filters only exist live, so this compares the signals themselves.
     """
-    out = []
-    for tf_name, tf in (("1 小时", "1h"), ("30 分钟", "30m")):
-        top = {"timeframe": tf, "trend_timeframe": "4h", "entry_order": "maker",
-               "tp_order": "maker"}
-        for tp in (2.0, 1.5):
-            out.append((f"{tf_name}·突破·止盈 {tp:g} 倍", top,
-                        {"signal_type": "breakout", "take_profit_r": [tp]}, False))
-    return out
+    top = {"timeframe": "1m", "trend_timeframe": "15m", "entry_order": "maker",
+           "tp_order": "maker", "maker_timeout_seconds": 60}
+    base = {"take_profit_r": [1.0], "max_hold_bars": 10, "breakout_lookback": 15,
+            "trend_ema": 50, "volume_factor": 1.0, "trend_min_gap": 0}
+    return [
+        ("1 分钟·只顺 15 分钟大方向（突破+反弹被打回）", top, {**base, "signal_type": "combo"}, False),
+        ("1 分钟·先看行情：有趋势顺势，横盘高空低多", top, {**base, "signal_type": "adaptive"}, False),
+        ("1 分钟·只做横盘：区间上沿空、下沿多", top,
+         {**base, "signal_type": "adaptive", "range_trend_gap": 1.0}, False),
+    ]
 
 
 def indicator_lines(trades, cut):

@@ -59,6 +59,8 @@ def prepare(df: pd.DataFrame, df_trend: pd.DataFrame, cfg: Config) -> pd.DataFra
     out["atr"] = atr(out, s.atr_period)
     out["hh"] = out["high"].rolling(s.breakout_lookback).max().shift(1)
     out["ll"] = out["low"].rolling(s.breakout_lookback).min().shift(1)
+    out["rng_hi"] = out["high"].rolling(s.range_lookback).max().shift(1)
+    out["rng_lo"] = out["low"].rolling(s.range_lookback).min().shift(1)
     out["vol_avg"] = out["volume"].rolling(s.volume_lookback).mean().shift(1)
     out["ema_fast"] = ema(out["close"], s.fast_ema)
     out["bb_mid"] = out["close"].rolling(s.bb_period).mean()
@@ -146,6 +148,26 @@ def _side(row: pd.Series, cfg: Config) -> tuple[str, float] | None:
         if n <= -s.min_score < prev:
             return "short", -n / len(VOTES)
         return None
+    if s.signal_type == "adaptive":
+        # trend clearly under way (price well away from the trend average): go with it.
+        # otherwise the market is ranging: sell the top of the range, buy the bottom
+        # (live 2026-10-23: 8 hours of "downtrend" shorts while prices only went sideways)
+        trend_dist = abs(row["trend_close"] - row["trend_ema"]) / row["trend_ema"]
+        if trend != 0 and trend_dist >= s.range_trend_gap:
+            if trend == 1 and (close > row["hh"] or row["low"] <= row["ema_fast"] < close):
+                return "long", 0.5
+            if trend == -1 and (close < row["ll"] or row["high"] >= row["ema_fast"] > close):
+                return "short", 0.5
+            return None
+        hi, lo = row["rng_hi"], row["rng_lo"]
+        if pd.isna(hi) or pd.isna(lo) or (hi - lo) / close < 2 * cfg.risk.min_stop_pct:
+            return None  # range too narrow for a stop and a target inside it
+        where = (close - lo) / (hi - lo)
+        if where >= 0.8 and close < row["open"] and row["high"] >= lo + 0.9 * (hi - lo):
+            return "short", where - 0.5
+        if where <= 0.2 and close > row["open"] and row["low"] <= lo + 0.1 * (hi - lo):
+            return "long", 0.5 - where
+        return None
     if s.signal_type in ("breakout", "combo"):
         if trend == 1 and close > row["hh"]:
             return "long", (close - row["hh"]) / a
@@ -208,7 +230,11 @@ def signal_at(row: pd.Series, cfg: Config) -> Signal | None:
         np.clip(breakout, 0, 1),
     ]))
     kind = s.signal_type
-    if kind == "combo":
+    if kind == "adaptive":
+        in_trend = row["trend"] != 0 and trend_dist >= s.range_trend_gap
+        kind = "range" if not in_trend else (
+            "breakout" if (close > row["hh"] if side == "long" else close < row["ll"]) else "bounce")
+    elif kind == "combo":
         kind = "breakout" if (close > row["hh"] if side == "long" else close < row["ll"]) else "bounce"
     reason = f"{side} {kind} vol x{vol_ratio:.1f} trend {trend_dist:.2%}"
     if s.signal_type == "score":

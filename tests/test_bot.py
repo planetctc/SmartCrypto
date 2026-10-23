@@ -606,9 +606,9 @@ def test_tune_variants_cover_every_signal_and_config_is_valid():
     import main
     from bot.config import validate
     variants = main.tune_variants()
-    assert len(variants) == 4
-    assert {v[1]["timeframe"] for v in variants} == {"30m", "1h"}
-    assert {v[2]["signal_type"] for v in variants} == {"breakout"}
+    assert len(variants) == 3
+    assert {v[1]["timeframe"] for v in variants} == {"1m"}
+    assert {v[2]["signal_type"] for v in variants} == {"combo", "adaptive"}
     for _, top, change, _ in variants:
         c = load_config(ROOT / "config.yaml")
         for k, v in top.items():
@@ -1057,7 +1057,6 @@ def test_combo_takes_rejected_bounce_into_fast_average_in_a_downtrend():
     assert _side(row, c)[0] == "short"
     c.strategy.signal_type = "breakout"
     assert _side(row, c) is None
-    assert load_config(ROOT / "config_hf.yaml").strategy.signal_type == "combo"
 
 
 def test_demo_ignores_daily_loss_and_min_equity_stops_live_keeps_them():
@@ -1175,3 +1174,19 @@ def test_combo_signal_says_which_setup_fired():
                      "trend": -1, "hh": 103.0, "ll": 97.0, "ema_fast": 100.0, "volume": 1.0,
                      "vol_avg": 1.0, "trend_ema": 101.0, "trend_close": 99.0})
     assert signal_at(row, c).kind == "bounce"
+
+
+def test_adaptive_sells_the_top_of_a_range_and_buys_the_bottom_when_no_trend():
+    import pandas as pd
+    from bot.strategy import _side
+    c = cfg()
+    c.strategy.signal_type = "adaptive"
+    base = {"atr": 0.1, "trend": -1, "hh": 101.0, "ll": 99.0, "ema_fast": 100.0,
+            "trend_close": 100.0, "trend_ema": 100.1, "rng_hi": 101.0, "rng_lo": 99.0}
+    top = pd.Series({**base, "close": 100.8, "open": 100.9, "high": 100.95, "low": 100.7})
+    bottom = pd.Series({**base, "close": 99.2, "open": 99.1, "high": 99.3, "low": 99.05})
+    assert _side(top, c)[0] == "short" and _side(bottom, c)[0] == "long"  # weak trend = range
+    strong = pd.Series({**base, "trend_close": 98.0, "close": 98.5, "open": 98.9, "high": 99.0,
+                        "low": 98.4, "ll": 98.6})
+    assert _side(strong, c)[0] == "short"   # clear downtrend: with the trend
+    assert load_config(ROOT / "config_hf.yaml").strategy.signal_type == "adaptive"
