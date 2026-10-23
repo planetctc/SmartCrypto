@@ -36,6 +36,12 @@ VARIANTS = [
     ("15分反着做", "config.yaml", {"timeframe": "15m", "trend_timeframe": "1h",
                                  "maker_timeout_seconds": 900, "strategy.max_hold_bars": 16,
                                  "strategy.reverse": True}),
+    # everything at once: 1h/4h/daily structure, BTC's direction, live order book confirming
+    ("15分全面看", "config.yaml", {"timeframe": "15m", "trend_timeframe": "1h",
+                                 "maker_timeout_seconds": 900, "strategy.max_hold_bars": 16,
+                                 "structure_min_score": 3, "flow_confirm": True,
+                                 "flow_min_share": 0.55, "leader_bars": 3,
+                                 "leader_min_move": 0.0005}),
     ("5分突破+大结构", "config.yaml", {"timeframe": "5m", "trend_timeframe": "1h",
                                    "maker_timeout_seconds": 300, "strategy.max_hold_bars": 48,
                                    "structure_min_score": 3}),
