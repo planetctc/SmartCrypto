@@ -1464,3 +1464,26 @@ def test_auto_tune_picks_a_setting_from_the_recording(tmp_path):
     assert ch is not None and ch.verified and "机器人自己挑" in report
     ch, report = choose(load(tmp_path / "none"))
     assert ch is None and "不够" in report
+
+
+def test_flow_mode_pauses_a_coin_that_keeps_losing_and_waits_after_unfilled_entry(tmp_path):
+    e, b = _flow_engine(tmp_path, "manual")
+    sym = "XRP/USDT:USDT"
+    e.risk.state.recent[sym] = [-3.3, -3.3]
+    e.risk.record_close(b.now, sym, -3.3, True, e.tf_ms)
+    e._pause_if_losing(sym, b.now)
+    assert e.coin_pause[sym] > b.now + 3 * 3_600_000
+    b.pos.clear()
+    e.trades.clear()
+    e.risk.state.recent[sym] = []
+    e.coin_pause.clear()
+    e.entry_wait[sym] = b.now + 60_000
+    e.cfg.flow_burst = 0
+    _book(e, sym, b.now, 99.99, 100.01)
+    n = len(b.limits)
+    e.step()
+    assert len(b.limits) == n                                   # waiting after a miss
+    b.now += 61_000
+    _book(e, sym, b.now, 99.99, 100.01)
+    e.step()
+    assert len(b.limits) == n + 1                               # then tries again

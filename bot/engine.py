@@ -20,6 +20,8 @@ from .flowsignal import FRESH_MS, FlowFeed, flow_side
 LATE_WINDOW_MS = 1_800_000   # 人工平法 after the max hold: best price of the last 30 minutes
 LATE_REFRESH_MS = 600_000    #   re-aimed every 10 minutes
 LATE_GIVEUP_MS = 3_600_000   #   market an hour after the max hold
+ENTRY_RETRY_MS = 60_000      # 盘口模式: after an unfilled limit entry wait before the next one
+PAUSE_MS = 4 * 3_600_000     # 盘口模式: a coin whose last 3+ live trades lost is paused this long
 from .structure import snapshot
 from .strategy import (TF_MS, Signal, manage_position, prepare, scales_in, signal_at,
                        trade_plan)
@@ -86,6 +88,8 @@ class Engine:
         self.atr: dict[str, float] = {}
         self.flow_mode = cfg.strategy.signal_type == "flow"
         self.flow_verified = False
+        self.entry_wait: dict[str, int] = {}   # 盘口模式: no new limit entry before this time
+        self.coin_pause: dict[str, int] = {}   # 盘口模式: coin losing live, paused until
         self.feed: FlowFeed | None = None
         self.risk = RiskManager(cfg, self._load_state())
 
@@ -210,6 +214,7 @@ class Engine:
                 self._on_filled(sym, pe, now)
             else:
                 log.info("%s maker entry %s not filled (%s)", sym, pe.order_id, status)
+                self.entry_wait[sym] = now + ENTRY_RETRY_MS
                 self._market_fallback(sym, pe, now, positions)
         if self.trades.keys() - positions.keys():
             positions.clear()
@@ -225,6 +230,7 @@ class Engine:
             self._on_filled(sym, pe, now)
         else:
             log.info("%s maker entry %s cancelled (timeout)", sym, pe.order_id)
+            self.entry_wait[sym] = now + ENTRY_RETRY_MS
             if fallback:
                 self._market_fallback(sym, pe, now, positions)
 
@@ -333,8 +339,21 @@ class Engine:
                 log.info("%s position gone (exchange stop/TP), approx pnl %.2f", sym, pnl)
             self.risk.record_close(now, sym, pnl, pnl < 0, self.tf_ms,
                                    (f"kind:{t.kind}",) if t.kind else ())
+            self._pause_if_losing(sym, now)
             self._journal(sym, t.side, avg, px, "limit exit after hold" if limit_exit
                           else "exchange stop/TP", pnl, t.opened_ms, now, t.reason)
+
+    def _pause_if_losing(self, sym: str, now: int) -> None:
+        """盘口模式: live 10/23 ADA lost 7 flow trades in a row (-15.64 of -19.80) while the
+        bot kept trading it at half size; a coin whose last 3+ live results add up to a loss
+        is left alone for PAUSE_MS."""
+        if not self.flow_mode:
+            return
+        recent = self.risk.state.recent.get(sym, [])[-3:]
+        if len(recent) >= 3 and sum(recent) < 0:
+            self.coin_pause[sym] = now + PAUSE_MS
+            log.info("PAUSE %s last %d trades %.2f, not traded for %d hours", sym, len(recent),
+                     sum(recent), PAUSE_MS // 3_600_000)
 
     def _journal(self, sym: str, side: str, entry: float, exit_: float, why: str, pnl: float,
                  opened_ms: int, now: int, reason: str = "") -> None:
@@ -373,6 +392,7 @@ class Engine:
         stopped = pnl < 0 and why not in ("max hold time", "replaced by new signal")
         self.risk.record_close(now, sym, pnl, stopped, self.tf_ms,
                                (f"kind:{t.kind}",) if t and t.kind else ())
+        self._pause_if_losing(sym, now)
         self._journal(sym, p.side, p.entry, fill, why, pnl, t.opened_ms if t else now, now,
                       t.reason if t else "")
 
@@ -419,7 +439,8 @@ class Engine:
                 continue
             live += 1
             if (sym in self.pending or sym in self.trades or closed_for_new
-                    or sym.split("/")[0] in c.flow_skip_coins):
+                    or sym.split("/")[0] in c.flow_skip_coins
+                    or now < self.entry_wait.get(sym, 0) or now < self.coin_pause.get(sym, 0)):
                 continue
             side = flow_side(f, c.flow_threshold, c.flow_burst)
             if side is None:

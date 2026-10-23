@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import pandas as pd
 
-from .flowtest import (HOLDS, INTENSITY, MAKER_RT, MAKER_WAIT_S, MIN_HOURS, THRESHOLDS,
+from .flowtest import (MAKER_RT, MAKER_WAIT_S, MIN_HOURS, THRESHOLDS,
                        WINDOWS, features, hours_of, manual_exit)
 
 MAX_HOLD_S = 4 * 3600
@@ -21,6 +21,7 @@ TAKER_EXTRA = 0.0004            # a stop / forced exit pays taker instead of mak
 TPS = (0.001, 0.002, 0.003, 0.005)
 SLS = (0.003, 0.005, 0.008)
 MARGINS = (0.0, 0.0005, 0.001)  # 人工平法: what a waiting trade asks for above break-even
+BURSTS = (2, 4)                 # live 10/23: signals on ordinary volume (0.2-0.9x) lost
 MIN_EACH = 10                   # trades needed in each part
 
 
@@ -126,14 +127,15 @@ def choose(frames: dict[str, pd.DataFrame]) -> tuple[Choice | None, str]:
     t0 = min(f["ts"].iloc[0] for f in frames.values())
     t1 = max(f["ts"].iloc[-1] for f in frames.values())
     cut = t0 + (t1 - t0) * 2 / 3
-    rules = [("time", h) for h in HOLDS] + [("manual", h, sl, m) for h in (600, 1200) for sl in (0.005, 0.008)
+    # no plain "time is up, close" exits: they were the biggest loss live (nick: 自己死)
+    rules = [("manual", h, sl, m) for h in (600, 1200) for sl in (0.005, 0.008)
                      for m in MARGINS] + \
         [("bracket", tp, sl) for tp in TPS for sl in SLS]
     found: list[Choice] = []
     for w in WINDOWS:
         feats = {c: features(f, w) for c, f in frames.items()}
         for th in THRESHOLDS:
-            for k in INTENSITY:
+            for k in BURSTS:
                 ent = {c: _entries(d, th, k) for c, d in feats.items()}
                 for rule in rules:
                     rows = [x for c, d in feats.items() for x in _run(d, ent[c], rule)]

@@ -255,6 +255,9 @@ def _friendly(line: str) -> str:
         how = {"time": "时间到，挂单平仓", "profit": "有赚，挂单走", "breakeven": "还没赚，挂在回本价等",
                "late": "已拿 4 小时，挂在最近 30 分钟的最好价等", "take-profit": "挂好止盈"}
         return f"{t}  {coin(r[1])} {how.get(r[3], '挂单平仓')} @ {r[2]}"
+    if r := re.match(r"PAUSE (\S+) last (\d+) trades (\S+), not traded for (\d+) hours", msg):
+        return (f"{t}  {coin(r[1])} 最近 {r[2]} 单合计 {float(r[3]):+.2f}，"
+                f"先停 {r[4]} 小时不做这个币")
     if r := re.match(r"AUTOTUNE (\S+) \| (.*)", msg):
         tag = {"verified": "（两段都赚）", "unverified": "（还没两段都赚，只在模拟盘跑）"}.get(r[1], "")
         return f"{t}  机器人自己重新挑了做法{tag}：{r[2]}"
