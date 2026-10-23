@@ -114,6 +114,8 @@ class Config:
     flow_exit: str = "manual"        # time / manual (人工平法) / bracket (limit TP + stop)
     flow_tp_pct: float = 0.002       # bracket: take-profit distance
     flow_stop_pct: float = 0.008     # exchange stop distance
+    flow_be_margin: float = 0.0      # manual: a trade not in profit waits for break-even + this
+    flow_skip_coins: list[str] = field(default_factory=list)  # auto-tune: coins losing both parts
     flow_autotune_hours: float = 2.0  # re-pick entry + exit from the recording this often (0 = off)
     entry_order: str = "market"      # "market" or "maker" (post-only limit, lower fee)
     maker_timeout_seconds: int = 60  # cancel an unfilled maker entry after this long

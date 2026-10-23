@@ -101,34 +101,38 @@ def trades(d: pd.DataFrame, threshold: float, hold: int, intensity: float = 0) -
 
 
 def manual_exit(ts: np.ndarray, mid: np.ndarray, i: int, px: float, k: int, hold: int,
-                cost: float) -> tuple[float, int, str]:
+                cost: float, stop_pct: float = STOP, wait_for: float | None = None
+                ) -> tuple[float, int, str]:
     """人工平法 from fill row i at price px: (move, exit row, how).
     At `hold`: in profit after cost -> out. Otherwise wait for break-even (move = cost).
     After 4 hours: out when price comes back to the best of the 30 minutes before, or at
     the mid an hour later. A 0.8% stop (market, so taker fee) the whole time.
-    Data ending first: marked at the last mid ("open")."""
+    Data ending first: marked at the last mid ("open").
+    wait_for: what the resting exit of a trade not in profit asks for (default: cost =
+    break-even after fees; more = a little profit on top)."""
+    target_be = cost if wait_for is None else wait_for
     t0 = ts[i]
     end = np.searchsorted(ts, t0 + (MAX_HOLD_S + LATE_GIVEUP_S) * 1000, side="right")
     r = k * (mid[i:end] / px - 1)
     t = ts[i:end]
     extra = 0.0004  # taker instead of maker on a stop / forced exit
-    stop = np.flatnonzero(r <= -STOP)
+    stop = np.flatnonzero(r <= -stop_pct)
     first_stop = stop[0] if len(stop) else len(r)
     h = np.searchsorted(t, t0 + hold * 1000)
     if h >= len(r):
         return (r[-1], i + len(r) - 1, "open") if first_stop >= len(r) else \
-            (-STOP - extra, i + first_stop, "stop")
+            (-stop_pct - extra, i + first_stop, "stop")
     if first_stop <= h:
-        return -STOP - extra, i + first_stop, "stop"
+        return -stop_pct - extra, i + first_stop, "stop"
     if r[h] >= cost:
         return r[h], i + h, "profit"
     late = np.searchsorted(t, t0 + MAX_HOLD_S * 1000)
-    be = np.flatnonzero(r[h:late] >= cost)
+    be = np.flatnonzero(r[h:late] >= target_be)
     be_at = h + be[0] if len(be) else len(r)
     if be_at < first_stop and be_at < late:
-        return cost, i + be_at, "breakeven"
+        return target_be, i + be_at, "breakeven"
     if first_stop < late:
-        return -STOP - extra, i + first_stop, "stop"
+        return -stop_pct - extra, i + first_stop, "stop"
     if late >= len(r):
         return r[-1], i + len(r) - 1, "open"
     lo = np.searchsorted(t, t[late] - LATE_WINDOW_S * 1000)
@@ -138,7 +142,7 @@ def manual_exit(ts: np.ndarray, mid: np.ndarray, i: int, px: float, k: int, hold
     if back_at < first_stop and back_at < len(r):
         return target, i + back_at, "late"
     if first_stop < len(r):
-        return -STOP - extra, i + first_stop, "stop"
+        return -stop_pct - extra, i + first_stop, "stop"
     if end >= len(ts):
         return r[-1], i + len(r) - 1, "open"
     return r[-1] - extra, i + len(r) - 1, "late"

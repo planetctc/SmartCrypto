@@ -418,7 +418,8 @@ class Engine:
             if not f or now - f["ts"] > FRESH_MS:
                 continue
             live += 1
-            if sym in self.pending or sym in self.trades or closed_for_new:
+            if (sym in self.pending or sym in self.trades or closed_for_new
+                    or sym.split("/")[0] in c.flow_skip_coins):
                 continue
             side = flow_side(f, c.flow_threshold, c.flow_burst)
             if side is None:
@@ -457,13 +458,16 @@ class Engine:
                 c.flow_window, c.flow_threshold, c.flow_burst = (choice.window, choice.threshold,
                                                                  choice.burst)
                 c.flow_exit, c.flow_stop_pct = choice.exit, choice.sl
+                c.flow_be_margin = choice.margin
+                c.flow_skip_coins = list(choice.skip)
                 if choice.exit == "bracket":
                     c.flow_tp_pct = choice.tp
                 else:
                     c.flow_hold_seconds = choice.hold
                 self.flow_verified = choice.verified
-                log.info("AUTOTUNE %s | %s", "verified" if choice.verified else "unverified",
-                         choice.describe())
+                log.info("AUTOTUNE %s | %s%s", "verified" if choice.verified else "unverified",
+                         choice.describe(),
+                         f"；先不做 {'、'.join(choice.skip)}" if choice.skip else "")
             else:
                 log.info("AUTOTUNE none | %s", report.splitlines()[0])
         if now < getattr(self, "_tune_next", 0) or getattr(self, "_tuning", False):
@@ -538,7 +542,8 @@ class Engine:
         if sign * (f["mid"] / t.entry - 1) >= cost:
             self._place_exit(sym, t, touch, "profit", now)
         else:
-            self._place_exit(sym, t, self._round(sym, t.entry * (1 + sign * cost), away),
+            want = cost + c.flow_be_margin
+            self._place_exit(sym, t, self._round(sym, t.entry * (1 + sign * want), away),
                              "breakeven", now)
 
     def _place_exit(self, sym: str, t: Trade, px: float, kind: str, now: int) -> None:

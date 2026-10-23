@@ -20,6 +20,7 @@ MAX_HOLD_S = 4 * 3600
 TAKER_EXTRA = 0.0004            # a stop / forced exit pays taker instead of maker
 TPS = (0.001, 0.002, 0.003, 0.005)
 SLS = (0.003, 0.005, 0.008)
+MARGINS = (0.0, 0.0005, 0.001)  # 人工平法: what a waiting trade asks for above break-even
 MIN_EACH = 10                   # trades needed in each part
 
 
@@ -32,6 +33,9 @@ class Choice:
     hold: int = 0        # seconds (time, manual)
     tp: float = 0.0      # bracket
     sl: float = 0.008
+    margin: float = 0.0  # manual: a waiting trade asks for break-even + this
+    rule: tuple = ()
+    skip: tuple = ()     # coins that lost with this setting in BOTH parts: not traded
     sel: float = 0.0     # average net per trade (after cost), first 2/3
     val: float = 0.0     # last 1/3
     trades: int = 0
@@ -40,7 +44,9 @@ class Choice:
 
     def describe(self) -> str:
         out = {"time": f"拿 {self.hold // 60} 分钟挂单平",
-               "manual": f"{self.hold // 60} 分钟后有赚就走、没赚等回本、4 小时后找近高点平",
+               "manual": (f"{self.hold // 60} 分钟后有赚就走、没赚挂"
+                          + (f"回本再多 {self.margin:.2%}" if self.margin else "回本价")
+                          + f"等、4 小时后找近高点平、止损 {self.sl:.1%}"),
                "bracket": f"止盈 {self.tp:.1%} 挂单、止损 {self.sl:.1%}、最多拿 4 小时"}[self.exit]
         vol = f"成交量 {self.burst:g} 倍以上" if self.burst else "成交量不限"
         return (f"看 {self.window} 秒成交、主动方向 ≥{self.threshold:.0%}、{vol}，"
@@ -100,13 +106,13 @@ def _run(d, entries, rule) -> list[tuple[int, float]]:
                 break
             move = side[n] * (mid[j] / px[n] - 1)
         elif kind == "manual":
-            move, j, how = manual_exit(ts, mid, f, px[n], side[n], rule[1], MAKER_RT)
-            if how == "open":
+            move, j, how = manual_exit(ts, mid, f, px[n], side[n], rule[1], MAKER_RT,
+                                       rule[2], MAKER_RT + rule[3])
+            if how == "open":  # still waiting when the data ends: count it at the last price
+                out.append((ts[i], move - MAKER_RT))
                 break
         else:
             move, j = _bracket(ts, mid, f, px[n], side[n], rule[1], rule[2])
-            if j >= len(ts) - 1:
-                break
         out.append((ts[i], move - MAKER_RT))
         free = ts[j] + 1
     return out
@@ -120,7 +126,8 @@ def choose(frames: dict[str, pd.DataFrame]) -> tuple[Choice | None, str]:
     t0 = min(f["ts"].iloc[0] for f in frames.values())
     t1 = max(f["ts"].iloc[-1] for f in frames.values())
     cut = t0 + (t1 - t0) * 2 / 3
-    rules = [("time", h) for h in HOLDS] + [("manual", h) for h in (600, 1200)] + \
+    rules = [("time", h) for h in HOLDS] + [("manual", h, sl, m) for h in (600, 1200) for sl in (0.005, 0.008)
+                     for m in MARGINS] + \
         [("bracket", tp, sl) for tp in TPS for sl in SLS]
     found: list[Choice] = []
     for w in WINDOWS:
@@ -135,21 +142,37 @@ def choose(frames: dict[str, pd.DataFrame]) -> tuple[Choice | None, str]:
                     if len(a) < MIN_EACH or len(b) < MIN_EACH:
                         continue
                     ch = Choice(w, th, k, rule[0], sel=float(np.mean(a)), val=float(np.mean(b)),
-                                trades=len(rows), per_day=len(rows) / hours * 24)
+                                trades=len(rows), per_day=len(rows) / hours * 24, rule=rule)
                     if rule[0] == "bracket":
                         ch.tp, ch.sl = rule[1], rule[2]
                     else:
                         ch.hold = rule[1]
+                    if rule[0] == "manual":
+                        ch.sl, ch.margin = rule[2], rule[3]
                     ch.verified = ch.sel > 0 and ch.val > 0
                     found.append(ch)
     if not found:
         return None, "数据里成交的单太少，先用默认设置。"
     found.sort(key=lambda c: -min(c.sel, c.val))
     best = found[0]
+    # coins that lost with this setting in both parts (live 2026-10-23: both stops were ADA)
+    skip, per_coin = [], []
+    for c, f in frames.items():
+        d = features(f, best.window)
+        rows = _run(d, _entries(d, best.threshold, best.burst), best.rule)
+        a = [m for t, m in rows if t < cut]
+        b = [m for t, m in rows if t >= cut]
+        if len(a) >= 3 and len(b) >= 3 and np.mean(a) < 0 and np.mean(b) < 0:
+            skip.append(c)
+        per_coin.append(f"{c} {len(rows)} 单 {np.mean([m for _, m in rows]) if rows else 0:+.3%}")
+    best.skip = tuple(skip)
     lines = [f"机器人自己挑（{hours:.1f} 小时盘口数据，{len(found)} 种进场×平仓组合，"
              "照真实挂单成交算，已扣手续费）：", ""]
     for c in found[:5]:
         lines.append(("✓ " if c.verified else "  ") + c.describe())
+    lines += ["", "第一个做法每个币（每单净赚）：" + "，".join(per_coin)]
+    if skip:
+        lines.append("这些币两段都亏，先不做：" + "、".join(skip))
     lines += ["", ("用第一个：两段都赚。" if best.verified
                    else "用第一个，但还没有两段都赚的组合：模拟盘照跑收集数据，真钱不会开单。")]
     return best, "\n".join(lines)
