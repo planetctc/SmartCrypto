@@ -114,6 +114,22 @@ class Config:
     # 实时看盘 (nick 10/24): every loop, not on candle closes - price at a support/resistance
     # level from the big structure, with live takers and the book on one side: bounce off it or
     # break through it. The same 全面看 checks then decide (structure, BTC, order book).
+    # 超买超卖: no long when RSI (15m) is at/above this, no short at/below 100 - this; 0 = off
+    overbought: float = 0.0
+    # 多空比 (Bitget account long/short ratio): crowd heavily long -> no long chase; heavily
+    # short -> no short chase; 0 = off
+    crowd_long_max: float = 0.0
+    crowd_short_min: float = 0.0
+    # 资金费率: funding at/above this -> longs are paying a lot (crowded), no long; at/below
+    # minus this -> no short; 0 = off
+    funding_max: float = 0.0
+    # 持仓量: a breakout needs open interest not falling over the last 15 min (new money in,
+    # not just the other side closing); False = off
+    oi_confirm: bool = False
+    # 9 项指标 (trend, EMA, MACD, KDJ, RSI, Bollinger, volume, candle, breakout on 15m): a
+    # breakout needs at least this many net votes with it; a level hold only needs them not
+    # strongly against (-3); 0 = off
+    votes_need: int = 0
     live_watch: bool = False
     watch_near: float = 0.002        # "at the level" = within 0.2%
     watch_min_share: float = 0.6     # live taker share on our side

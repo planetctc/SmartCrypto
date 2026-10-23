@@ -26,7 +26,7 @@ LATE_GIVEUP_MS = 3_600_000   #   market an hour after the max hold
 ENTRY_RETRY_MS = 60_000      # 盘口模式: after an unfilled limit entry wait before the next one
 PAUSE_MS = 4 * 3_600_000     # 盘口模式: a coin whose last 3+ live trades lost is paused this long
 from .structure import round_step, snapshot
-from .strategy import (TF_MS, Signal, manage_position, prepare, scales_in, signal_at,
+from .strategy import (TF_MS, Signal, manage_position, prepare, rsi, scales_in, signal_at,
                        trade_plan)
 
 log = logging.getLogger("bot.engine")
@@ -539,6 +539,90 @@ class Engine:
                      book={"bid": f["bid"], "ask": f["ask"]})
         self._try_open(sym, sig, now, positions)
 
+    def _votes(self, sym: str, now: int) -> int | None:
+        """Net votes of the 9 indicators on the last closed 15m bar, cached per bar."""
+        if not self.cfg.votes_need:
+            return None
+        cache = self.__dict__.setdefault("_votes_cache", {})
+        bar = now // TF_MS["15m"]
+        if sym not in cache or cache[sym][0] != bar:
+            try:
+                c15 = self.lanes.get("15m") or lane_config(self.cfg, "15m")
+                df = prepare(self.broker.ohlcv(sym, "15m", HISTORY_BARS),
+                             self.broker.ohlcv(sym, "1h", c15.strategy.trend_ema * 3 + 10), c15)
+                val = int(df["score"].iloc[-1])
+            except Exception as e:  # noqa: BLE001 - never block trading on this
+                log.warning("%s indicators not read (%s)", sym, e)
+                val = None
+            cache[sym] = (bar, val)
+        return cache[sym][1]
+
+    def _positioning(self, sym: str, now: int) -> tuple[float | None, float | None]:
+        """(funding rate, open interest change over ~15 min), refreshed every 5 minutes."""
+        if not (self.cfg.funding_max or self.cfg.oi_confirm):
+            return None, None
+        ex = getattr(self.broker, "ex", None)
+        if ex is None:
+            return None, None
+        cache = self.__dict__.setdefault("_pos_cache", {})
+        hist = self.__dict__.setdefault("_oi_hist", {}).setdefault(sym, [])
+        slot = now // 300_000
+        if sym not in cache or cache[sym][0] != slot:
+            fund = oi = None
+            try:
+                fund = float(ex.fetch_funding_rate(sym).get("fundingRate") or 0) or None
+            except Exception as e:  # noqa: BLE001
+                log.warning("%s funding not read (%s)", sym, e)
+            try:
+                d = ex.fetch_open_interest(sym)
+                oi = float(d.get("openInterestAmount") or d.get("openInterestValue") or 0) or None
+            except Exception as e:  # noqa: BLE001
+                log.warning("%s open interest not read (%s)", sym, e)
+            chg = None
+            if oi:
+                hist.append((now, oi))
+                del hist[:-6]
+                old = next((v for t, v in hist if now - t >= 840_000), None)
+                chg = oi / old - 1 if old else None
+            cache[sym] = (slot, (fund, chg))
+        return cache[sym][1]
+
+    def _rsi(self, sym: str, now: int) -> float | None:
+        """RSI(14) on 15m candles, cached per 15m bar; None if off or not read."""
+        if not self.cfg.overbought:
+            return None
+        cache = self.__dict__.setdefault("_rsi_cache", {})
+        bar = now // TF_MS["15m"]
+        if sym not in cache or cache[sym][0] != bar:
+            try:
+                c = self.broker.ohlcv(sym, "15m", 100)["close"]
+                val = float(rsi(c, 14).iloc[-1])
+            except Exception as e:  # noqa: BLE001 - never block trading on this
+                log.warning("%s RSI not read (%s)", sym, e)
+                val = None
+            cache[sym] = (bar, val)
+        return cache[sym][1]
+
+    def _long_short(self, sym: str, now: int) -> float | None:
+        """Bitget long/short account ratio, cached 5 minutes; None if off or not available."""
+        if not (self.cfg.crowd_long_max or self.cfg.crowd_short_min):
+            return None
+        ex = getattr(self.broker, "ex", None)
+        if ex is None or not hasattr(ex, "fetch_long_short_ratio_history"):
+            return None
+        cache = self.__dict__.setdefault("_ls_cache", {})
+        slot = now // 300_000
+        if sym not in cache or cache[sym][0] != slot:
+            try:
+                hist = ex.fetch_long_short_ratio_history(sym, "5m", None, 1)
+                v = hist[-1].get("longShortRatio") if hist else None
+                val = float(v) if v not in (None, "") else None
+            except Exception as e:  # noqa: BLE001
+                log.warning("%s long/short ratio not read (%s)", sym, e)
+                val = None
+            cache[sym] = (slot, val)
+        return cache[sym][1]
+
     def _look(self, sym: str, row, trend: int, now: int) -> None:
         """What the bot sees on a coin with no signal yet (15m and 1h scans): the trend, how
         far price still is from the breakout, volume, and the big-structure score."""
@@ -546,9 +630,11 @@ class Engine:
         up, down = float(row["hh"]) / px - 1, px / float(row["ll"]) - 1
         vol = float(row["volume"]) / float(row["vol_avg"]) if row["vol_avg"] > 0 else 0.0
         st = self._structure(sym, now)
-        log.info("LOOK %s %s trend %+d up %.3f%% down %.3f%% vol %.1fx struct %s", sym,
+        r, ls = self._rsi(sym, now), self._long_short(sym, now)
+        log.info("LOOK %s %s trend %+d up %.3f%% down %.3f%% vol %.1fx struct %s rsi %s ls %s", sym,
                  self.cfg.timeframe, trend, up * 100, down * 100, vol,
-                 "-" if not st else f"{st['score']:+d}")
+                 "-" if not st else f"{st['score']:+d}", "-" if r is None else f"{r:.0f}",
+                 "-" if ls is None else f"{ls:.2f}")
 
     # ---------- 盘口模式 ----------
     def _flow_step(self, now: int, positions: dict[str, Position]) -> None:
@@ -816,9 +902,38 @@ class Engine:
             log.info("%s signal skipped: BTC moving against it (%+.2f%% in %d bars)", sym,
                      move * 100, self.cfg.leader_bars)
             return
+        sign = sign_of(sig.side)
+        rsi_now = self._rsi(sym, now)
+        ob = self.cfg.overbought
+        if ob and rsi_now is not None and (rsi_now >= ob if sign > 0 else rsi_now <= 100 - ob):
+            log.info("%s signal skipped: %s (RSI %.0f)", sym,
+                     "overbought" if sign > 0 else "oversold", rsi_now)
+            return
+        ls = self._long_short(sym, now)
+        if ls is not None and ((sign > 0 and self.cfg.crowd_long_max and ls >= self.cfg.crowd_long_max)
+                               or (sign < 0 and self.cfg.crowd_short_min and ls <= self.cfg.crowd_short_min)):
+            log.info("%s signal skipped: crowd already %s (long/short %.2f)", sym,
+                     "long" if sign > 0 else "short", ls)
+            return
+        fund, oi_chg = self._positioning(sym, now)
+        fm = self.cfg.funding_max
+        if fm and fund is not None and sign * fund >= fm:
+            log.info("%s signal skipped: funding %+.4f%% crowded %s", sym, fund * 100,
+                     "long" if sign > 0 else "short")
+            return
+        if (self.cfg.oi_confirm and sig.kind != "range" and oi_chg is not None and oi_chg < 0):
+            log.info("%s signal skipped: open interest falling %+.2f%% (no new money)", sym,
+                     oi_chg * 100)
+            return
+        votes = self._votes(sym, now)
+        if self.cfg.votes_need and votes is not None:
+            need_v = -2 if sig.kind == "range" else self.cfg.votes_need
+            if sign * votes < need_v:
+                log.info("%s signal skipped: indicators %+d of 9 (need %+d)", sym, votes,
+                         sign * need_v)
+                return
         st = self._structure(sym, now)
         if st:
-            sign = sign_of(sig.side)
             if sign * st["score"] <= -self.cfg.structure_min_score:
                 log.info("%s signal skipped: structure against it (score %+d)", sym, st["score"])
                 return

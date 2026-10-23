@@ -1677,3 +1677,31 @@ def test_live_watch_waits_when_nobody_pushes(tmp_path):
     e._structure = lambda sym, now: {"score": 0, "res": px * 1.05, "sup": px * 0.999}
     e.step()
     assert not b.opened
+
+
+def test_crowded_funding_and_overbought_block_a_long(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    df = _df_ending_in_signal(c)
+    b = FakeBroker(df)
+    Engine(c, b).step()
+    sign = 1 if b.opened[0][1] == "long" else -1
+
+    class Ex:
+        def fetch_funding_rate(self, s):
+            return {"fundingRate": sign * 0.001}
+
+        def fetch_open_interest(self, s):
+            return {"openInterestAmount": 100}
+
+    c.funding_max, c.state_file = 0.0005, str(tmp_path / "s2.json")
+    b2 = FakeBroker(df)
+    b2.ex = Ex()
+    Engine(c, b2).step()
+    assert not b2.opened
+    c.funding_max, c.overbought, c.state_file = 0.0, 75, str(tmp_path / "s3.json")
+    b3 = FakeBroker(df)
+    e = Engine(c, b3)
+    e._rsi = lambda sym, now: 50 + sign * 40
+    e.step()
+    assert not b3.opened

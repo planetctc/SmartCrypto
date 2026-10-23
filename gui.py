@@ -220,10 +220,14 @@ def _friendly(line: str) -> str:
         found = f"{r[5]} 个信号" if r[5] != "0" else "没有信号"
         tf = {"1m": "1分", "5m": "5分", "15m": "15分", "1h": "1小时"}.get(r[6], r[6]) if r[6] else ""
         return (f"{t}  {tf}扫描 {r[1]} 个币：大方向向上 {r[2]}、向下 {r[3]}、不明 {r[4]}，{found}")
-    if r := re.match(r"LOOK (\S+) (\S+) trend ([+-]\d) up (\S+)% down (\S+)% vol (\S+)x struct (\S+)", msg):
+    if r := re.match(r"LOOK (\S+) (\S+) trend ([+-]\d) up (\S+)% down (\S+)% vol (\S+)x struct (\S+)(?: rsi (\S+) ls (\S+))?", msg):
         tf = {"15m": "15分", "1h": "1小时"}.get(r[2], r[2])
         way = {"+1": "向上", "-1": "向下"}.get(r[3], "不明")
         st = f"，大结构 {r[7]} 分" if r[7] != "-" else ""
+        if r[8] and r[8] != "-":
+            st += f"，RSI {r[8]}"
+        if r[9] and r[9] != "-":
+            st += f"，多空比 {r[9]}"
         return (f"{t}  {coin(r[1])} {tf}：均线{way}，再涨 {float(r[4]):.2f}% 突破可做多，"
                 f"再跌 {float(r[5]):.2f}% 跌破可做空，成交量 {r[6]} 倍{st}")
     if r := re.match(r"WATCH (\S+) (long|short) at (\S+) (\S+) taker (\S+)% book (\S+)", msg):
@@ -303,6 +307,16 @@ def _friendly(line: str) -> str:
             return f"{t}  {coin(r[1])} 有信号但没开单：1h/4h/日线大结构反方向（{m[1]} 分）"
         if m := re.match(r"structure not with it \(score (\S+), need (\S+)\)", r[2]):
             return f"{t}  {coin(r[1])} 有信号但没开单：大结构 {m[1]} 分，不够站在这边（要 {m[2]}）"
+        if m := re.match(r"funding (\S+)% crowded (long|short)", r[2]):
+            return f"{t}  {coin(r[1])} 有信号但没开单：资金费率 {m[1]}%，{'做多' if m[2] == 'long' else '做空'}的人太挤，不追"
+        if m := re.match(r"open interest falling (\S+)%", r[2]):
+            return f"{t}  {coin(r[1])} 有信号但没开单：持仓量在减少 {m[1]}%，没有新钱进来，突破不可信"
+        if m := re.match(r"indicators (\S+) of 9 \(need (\S+)\)", r[2]):
+            return f"{t}  {coin(r[1])} 有信号但没开单：9 项指标净 {m[1]}（要 {m[2]}）"
+        if m := re.match(r"(overbought|oversold) \(RSI (\S+)\)", r[2]):
+            return f"{t}  {coin(r[1])} 有信号但没开单：{'超买' if m[1] == 'overbought' else '超卖'}（RSI {m[2]}），不追"
+        if m := re.match(r"crowd already (long|short) \(long/short (\S+)\)", r[2]):
+            return f"{t}  {coin(r[1])} 有信号但没开单：大家都在{'做多' if m[1] == 'long' else '做空'}（多空比 {m[2]}），不跟着追"
         if m := re.match(r"round number (\S+) right ahead", r[2]):
             return f"{t}  {coin(r[1])} 有信号但没开单：前面就是整数关口 {m[1]}，不追"
         if m := re.match(r"long right under resistance (\S+)", r[2]):
