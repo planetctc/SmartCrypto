@@ -177,6 +177,8 @@ class Engine:
             log.info("SCAN %d coins up=%d down=%d flat=%d signals=%d", len(scans),
                      trends.count(1), trends.count(-1), trends.count(0),
                      sum(1 for _, sig in scans if sig))
+            nxt = (now // self.tf_ms + 1) * self.tf_ms
+            log.info("NEXT SCAN %s", datetime.fromtimestamp(nxt / 1000, timezone.utc).isoformat())
         self._save_state()
 
     def _balance(self) -> tuple[float, float]:
