@@ -97,6 +97,15 @@ class FlowFeed:
         log.info("FLOWFEED recording order book inside the bot for %s", " ".join(missing))
         threading.Thread(target=record, args=(missing, str(self.dir.parent)), daemon=True).start()
 
+    def trend(self, sym: str, minutes: int, now_ms: int) -> int:
+        """+1 / -1: mid up / down over the last `minutes`; 0 without that much history."""
+        rows = self.rows.get(sym) or []
+        if not rows or rows[0]["ts"] > now_ms - minutes * 60_000 * 0.9:
+            return 0
+        then = next(r for r in rows if r["ts"] >= now_ms - minutes * 60_000)
+        a, b = (then["bid"] + then["ask"]) / 2, (rows[-1]["bid"] + rows[-1]["ask"]) / 2
+        return 1 if b > a else -1 if b < a else 0
+
     def latest(self, sym: str, window: int) -> dict | None:
         """flowtest.features on the last hour, last row; None if stale or too little data."""
         rows = self.rows.get(sym) or []

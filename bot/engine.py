@@ -438,12 +438,17 @@ class Engine:
             if not f or now - f["ts"] > FRESH_MS:
                 continue
             live += 1
+            if sym not in self.coin_pause:  # after a restart: judge the remembered results once
+                self.coin_pause[sym] = 0
+                self._pause_if_losing(sym, now)
             if (sym in self.pending or sym in self.trades or closed_for_new
                     or sym.split("/")[0] in c.flow_skip_coins
                     or now < self.entry_wait.get(sym, 0) or now < self.coin_pause.get(sym, 0)):
                 continue
             side = flow_side(f, c.flow_threshold, c.flow_burst)
             if side is None:
+                continue
+            if c.flow_trend_minutes and feed.trend(sym, c.flow_trend_minutes, now) != sign_of(side):
                 continue
             signals += 1
             sign = sign_of(side)
@@ -481,6 +486,7 @@ class Engine:
                 c.flow_exit, c.flow_stop_pct = choice.exit, choice.sl
                 c.flow_be_margin = choice.margin
                 c.flow_skip_coins = list(choice.skip)
+                c.flow_trend_minutes = choice.trend
                 if choice.exit == "bracket":
                     c.flow_tp_pct = choice.tp
                 else:

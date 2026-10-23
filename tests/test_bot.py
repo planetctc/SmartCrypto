@@ -1487,3 +1487,24 @@ def test_flow_mode_pauses_a_coin_that_keeps_losing_and_waits_after_unfilled_entr
     _book(e, sym, b.now, 99.99, 100.01)
     e.step()
     assert len(b.limits) == n + 1                               # then tries again
+
+
+def test_flow_mode_pauses_a_losing_coin_right_after_a_restart(tmp_path):
+    c = load_config(ROOT / "config_flow.yaml")
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    c.flow_autotune_hours = 0
+    b = FlowBroker(synthetic(300, seed=1))
+    b.px = 100.0
+    _flow_rows(tmp_path, b.now)
+    e = Engine(c, b)
+    e.risk.state.recent["BTC/USDT:USDT"] = [-3.3, -3.3, 0.0]
+    e.step()
+    assert not b.limits and e.coin_pause["BTC/USDT:USDT"] > b.now
+
+
+def test_trend_filter_keeps_only_bursts_with_the_last_hour():
+    from bot.autotune import trend_sign
+    ts = np.arange(0, 7200) * 1000
+    mid = np.linspace(100, 101, 7200)
+    s = trend_sign(ts, mid, 60)
+    assert s[-1] == 1 and s[100] == 0

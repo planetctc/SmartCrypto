@@ -301,6 +301,9 @@ def cmd_flowtest(cfg, args):
                                 out) if frames else {}
     (out / "tune_progress.txt").write_text("全面分析中…", encoding="utf-8")
     report += "\n\n" + "=" * 30 + "\n\n" + study(out, structure)
+    (out / "tune_progress.txt").write_text("机器人自己挑做法…", encoding="utf-8")
+    from bot.autotune import choose
+    report += "\n\n" + "=" * 30 + "\n\n" + choose(frames)[1]
     (out / "flowtest_report.txt").write_text(report, encoding="utf-8")
     print(report)
 

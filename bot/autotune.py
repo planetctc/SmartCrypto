@@ -21,6 +21,7 @@ TAKER_EXTRA = 0.0004            # a stop / forced exit pays taker instead of mak
 TPS = (0.001, 0.002, 0.003, 0.005)
 SLS = (0.003, 0.005, 0.008)
 MARGINS = (0.0, 0.0005, 0.001)  # 人工平法: what a waiting trade asks for above break-even
+TRENDS = (0, 60)                # 0 = any direction; 60 = only with the last hour's move
 BURSTS = (2, 4)                 # live 10/23: signals on ordinary volume (0.2-0.9x) lost
 MIN_EACH = 10                   # trades needed in each part
 
@@ -37,6 +38,7 @@ class Choice:
     margin: float = 0.0  # manual: a waiting trade asks for break-even + this
     rule: tuple = ()
     skip: tuple = ()     # coins that lost with this setting in BOTH parts: not traded
+    trend: int = 0       # only trade with the last `trend` minutes' direction (0 = any)
     sel: float = 0.0     # average net per trade (after cost), first 2/3
     val: float = 0.0     # last 1/3
     trades: int = 0
@@ -50,6 +52,8 @@ class Choice:
                           + f"等、4 小时后找近高点平、止损 {self.sl:.1%}"),
                "bracket": f"止盈 {self.tp:.1%} 挂单、止损 {self.sl:.1%}、最多拿 4 小时"}[self.exit]
         vol = f"成交量 {self.burst:g} 倍以上" if self.burst else "成交量不限"
+        if self.trend:
+            vol += f"、只顺最近 {self.trend} 分钟的方向"
         return (f"看 {self.window} 秒成交、主动方向 ≥{self.threshold:.0%}、{vol}，"
                 f"{out}；每单净赚 挑选段 {self.sel:+.3%}、验证段 {self.val:+.3%}，"
                 f"约 {self.per_day:.0f} 单/天")
@@ -69,13 +73,25 @@ def _bracket(ts, mid, i, px, k, tp, sl):
     return r[-1] - TAKER_EXTRA, i + len(r) - 1
 
 
-def _entries(d: pd.DataFrame, threshold: float, burst: float) -> tuple[np.ndarray, ...]:
-    """Signal rows with the row/price their limit entry would fill at (-1: not filled)."""
+def trend_sign(ts: np.ndarray, mid: np.ndarray, minutes: int) -> np.ndarray:
+    """+1 / -1: price up / down over the last `minutes`; 0 without that much history."""
+    j = np.searchsorted(ts, ts - minutes * 60_000)
+    ok = (ts - ts[j] >= minutes * 60_000 * 0.9)
+    return np.where(ok, np.sign(mid / mid[j] - 1), 0).astype(int)
+
+
+def _entries(d: pd.DataFrame, threshold: float, burst: float,
+             trend: int = 0) -> tuple[np.ndarray, ...]:
+    """Signal rows with the row/price their limit entry would fill at (-1: not filled).
+    trend > 0: only bursts in the direction price went over the last `trend` minutes (live
+    10/23: ADA shorts into a rising ADA and XRP longs into a falling XRP made most losses)."""
     flow, tilt = d["flow"].to_numpy(), d["tilt"].to_numpy()
     bid, ask, ts = d["bid"].to_numpy(), d["ask"].to_numpy(), d["ts"].to_numpy()
     strong = d["burst"].to_numpy() >= burst
     side = np.where(strong & (flow >= threshold) & (tilt >= 0), 1,
                     np.where(strong & (flow <= -threshold) & (tilt <= 0), -1, 0))
+    if trend:
+        side = np.where(side == trend_sign(ts, d["mid"].to_numpy(), trend), side, 0)
     sig = np.flatnonzero(side)
     fill = np.full(len(sig), -1)
     px = np.where(side[sig] > 0, bid[sig], ask[sig])
@@ -135,8 +151,8 @@ def choose(frames: dict[str, pd.DataFrame]) -> tuple[Choice | None, str]:
     for w in WINDOWS:
         feats = {c: features(f, w) for c, f in frames.items()}
         for th in THRESHOLDS:
-            for k in BURSTS:
-                ent = {c: _entries(d, th, k) for c, d in feats.items()}
+            for k, tr in [(k, tr) for k in BURSTS for tr in TRENDS]:
+                ent = {c: _entries(d, th, k, tr) for c, d in feats.items()}
                 for rule in rules:
                     rows = [x for c, d in feats.items() for x in _run(d, ent[c], rule)]
                     a = [m for t, m in rows if t < cut]
@@ -144,24 +160,28 @@ def choose(frames: dict[str, pd.DataFrame]) -> tuple[Choice | None, str]:
                     if len(a) < MIN_EACH or len(b) < MIN_EACH:
                         continue
                     ch = Choice(w, th, k, rule[0], sel=float(np.mean(a)), val=float(np.mean(b)),
-                                trades=len(rows), per_day=len(rows) / hours * 24, rule=rule)
+                                trades=len(rows), per_day=len(rows) / hours * 24, rule=rule,
+                                trend=tr)
                     if rule[0] == "bracket":
                         ch.tp, ch.sl = rule[1], rule[2]
                     else:
                         ch.hold = rule[1]
                     if rule[0] == "manual":
                         ch.sl, ch.margin = rule[2], rule[3]
-                    ch.verified = ch.sel > 0 and ch.val > 0
+                    ch.verified = ch.sel > 0 and ch.val > 0  # judged again below
                     found.append(ch)
     if not found:
         return None, "数据里成交的单太少，先用默认设置。"
-    found.sort(key=lambda c: -min(c.sel, c.val))
+    # picked on the FIRST part only; the last part was never used to choose, so it says
+    # honestly whether the pick works (ranking by both parts let lucky combos win: 10/23 the
+    # pick showed +0.086% / +0.111% while the plain analysis found nothing above cost)
+    found.sort(key=lambda c: -c.sel)
     best = found[0]
     # coins that lost with this setting in both parts (live 2026-10-23: both stops were ADA)
     skip, per_coin = [], []
     for c, f in frames.items():
         d = features(f, best.window)
-        rows = _run(d, _entries(d, best.threshold, best.burst), best.rule)
+        rows = _run(d, _entries(d, best.threshold, best.burst, best.trend), best.rule)
         a = [m for t, m in rows if t < cut]
         b = [m for t, m in rows if t >= cut]
         if len(a) >= 3 and len(b) >= 3 and np.mean(a) < 0 and np.mean(b) < 0:
@@ -170,8 +190,9 @@ def choose(frames: dict[str, pd.DataFrame]) -> tuple[Choice | None, str]:
     best.skip = tuple(skip)
     lines = [f"机器人自己挑（{hours:.1f} 小时盘口数据，{len(found)} 种进场×平仓组合，"
              "照真实挂单成交算，已扣手续费）：", ""]
+    lines.append("（只按前 2/3 挑，后 1/3 是没看过的数据，用来检验）")
     for c in found[:5]:
-        lines.append(("✓ " if c.verified else "  ") + c.describe())
+        lines.append(("✓ " if c.verified else "✗ ") + c.describe())
     lines += ["", "第一个做法每个币（每单净赚）：" + "，".join(per_coin)]
     if skip:
         lines.append("这些币两段都亏，先不做：" + "、".join(skip))
