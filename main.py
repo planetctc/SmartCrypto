@@ -287,6 +287,17 @@ def cmd_selftest(cfg, args):
     print(text)
 
 
+def cmd_flowtest(cfg, args):
+    """分析盘口: test order-flow signals on the order book recorded by 记录盘口."""
+    from bot.flowtest import analyse, load
+    out = Path(args.data_dir)
+    out.mkdir(exist_ok=True)
+    (out / "tune_progress.txt").write_text("分析盘口数据…", encoding="utf-8")
+    report = analyse(load(out))
+    (out / "flowtest_report.txt").write_text(report, encoding="utf-8")
+    print(report)
+
+
 def cmd_record(cfg, args):
     """Record order book + trades (盘口) for the chosen coins until stopped."""
     import atexit
@@ -351,7 +362,8 @@ def main():
     force_utf8_output()
     from bot.config import load_config
     ap = argparse.ArgumentParser(description="SmartCrypto Bitget futures bot")
-    ap.add_argument("command", choices=["download", "backtest", "compare", "tune", "run", "record", "selftest"])
+    ap.add_argument("command", choices=["download", "backtest", "compare", "tune", "run", "record",
+                                        "selftest", "flowtest"])
     ap.add_argument("--configs", nargs="+", default=["config.yaml", "config_hf.yaml"],
                     help="compare 用的配置文件")
     ap.add_argument("--config", default="config.yaml")
@@ -371,7 +383,7 @@ def main():
     print(BANNER)
     {"download": cmd_download, "backtest": cmd_backtest, "compare": cmd_compare,
      "tune": cmd_tune, "run": cmd_run, "record": cmd_record,
-     "selftest": cmd_selftest}[args.command](cfg, args)
+     "selftest": cmd_selftest, "flowtest": cmd_flowtest}[args.command](cfg, args)
 
 
 if __name__ == "__main__":

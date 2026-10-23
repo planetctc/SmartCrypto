@@ -2,6 +2,7 @@ import math
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -1204,3 +1205,32 @@ def test_reverse_trades_the_other_side_with_its_own_stop():
     c.strategy.reverse = True
     sig = signal_at(row, c)
     assert sig.side == "long" and sig.stop < sig.entry < sig.take_profit
+
+
+def _orderflow_csv(tmp_path, edge):
+    """8 hours of 1-second rows; with edge, one-sided buying is followed by a rise."""
+    rng = np.random.default_rng(3)
+    n = 8 * 3600
+    buy, sell = rng.exponential(1, n), rng.exponential(1, n)
+    burst = rng.random(n) < 0.01
+    buy[burst] += 60
+    steps = rng.normal(0, 0.00005, n)
+    if edge:
+        for i in np.flatnonzero(burst):
+            steps[i + 1:i + 60] += 0.00004  # price climbs for a minute after a buying burst
+    mid = 100 * np.exp(np.cumsum(steps))
+    df = pd.DataFrame({"ts": 1_700_000_000_000 + np.arange(n) * 1000, "bid": mid - 0.005,
+                       "ask": mid + 0.005, "bid_qty5": 12.0, "ask_qty5": 10.0,
+                       "bid_qty15": 30.0, "ask_qty15": 30.0, "buy_qty": buy, "sell_qty": sell,
+                       "trades": 5, "last": mid, "maybe_missed": 0})
+    d = tmp_path / "orderflow"
+    d.mkdir(parents=True)
+    df.to_csv(d / "BTC_20231114.csv", index=False)
+    return tmp_path
+
+
+def test_flowtest_finds_a_planted_order_flow_edge_and_not_a_missing_one(tmp_path):
+    from bot.flowtest import analyse, load
+    assert "✓" in analyse(load(_orderflow_csv(tmp_path / "a", edge=True)))
+    assert "结论：这段数据里" in analyse(load(_orderflow_csv(tmp_path / "b", edge=False)))
+    assert "还没有盘口数据" in analyse(load(tmp_path / "none"))

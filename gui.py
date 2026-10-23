@@ -70,6 +70,10 @@ def tune_command(config_file: str, coins: list[str], margin: float, days: int = 
             "--coins", ",".join(coins), "--margin", f"{margin:g}", "--days", str(days)]
 
 
+def flowtest_command() -> list[str]:
+    return [sys.executable, str(ROOT / "main.py"), "flowtest"]
+
+
 def record_command(coins: list[str]) -> list[str]:
     return [sys.executable, str(ROOT / "main.py"), "record", "--coins", ",".join(coins)]
 
@@ -378,6 +382,8 @@ class Panel(tk.Tk):
         self.tune_btn.pack(side="left", padx=(6, 8))
         self.rec_btn = self._button(tools, "记录盘口", BLUE, self.toggle_record)
         self.rec_btn.pack(side="left", padx=(0, 8))
+        self.flow_btn = self._button(tools, "分析盘口", BLUE, self.flowtest)
+        self.flow_btn.pack(side="left", padx=(0, 8))
         self.test_btn = self._button(tools, "测试下单", BLUE, self.selftest)
         self.test_btn.pack(side="left")
 
@@ -620,6 +626,35 @@ class Panel(tk.Tk):
         box = tk.Text(win, bg=CARD, fg=FG, relief="flat", wrap="word", padx=12, pady=10,
                       font=(self.font, 11))
         box.insert("1.0", report)
+        box.configure(state="disabled")
+        box.pack(fill="both", expand=True, padx=12, pady=12)
+
+    def flowtest(self):
+        """分析盘口: does the recorded order book say anything a round trip's cost can't eat?"""
+        data = ROOT / "data"
+        data.mkdir(exist_ok=True)
+        self.flow_btn.configure(text="分析中…", state="disabled")
+        self.update_idletasks()
+        try:
+            proc = subprocess.run(flowtest_command(), cwd=str(ROOT), capture_output=True,
+                                  env=dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8"),
+                                  creationflags=NO_WINDOW, timeout=1800)
+        finally:
+            self.flow_btn.configure(text="分析盘口", state="normal")
+        path = data / "flowtest_report.txt"
+        if proc.returncode != 0 or not path.exists():
+            err = proc.stderr.decode("utf-8", "replace").strip().splitlines()[-8:]
+            messagebox.showerror("分析失败", "分析没有完成：\n\n" + "\n".join(err))
+            return
+        self._report_window("分析盘口", path.read_text(encoding="utf-8"))
+
+    def _report_window(self, title: str, text: str):
+        win = tk.Toplevel(self, bg=BG)
+        win.title(title)
+        win.geometry("660x560")
+        box = tk.Text(win, bg=CARD, fg=FG, relief="flat", wrap="word", padx=12, pady=10,
+                      font=(self.font, 11))
+        box.insert("1.0", text)
         box.configure(state="disabled")
         box.pack(fill="both", expand=True, padx=12, pady=12)
 
