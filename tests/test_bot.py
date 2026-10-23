@@ -29,6 +29,7 @@ def cfg() -> Config:
     # 全面看 filters off: these tests are about order mechanics (filters have their own tests)
     c.structure_min_score = c.structure_need = c.leader_bars = 0
     c.flow_confirm = False
+    c.scan_timeframes = []  # one timeframe: the mechanics below are per bar
     return c
 
 
@@ -1602,3 +1603,26 @@ def test_comprehensive_configs_look_at_everything():
         c = load_config(ROOT / path)
         assert c.structure_min_score and c.structure_need >= 2
         assert c.flow_confirm and c.flow_min_share >= 0.55 and c.leader_bars
+
+
+def test_fast_and_slow_timeframes_are_scanned_together(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["BTC/USDT:USDT"], str(tmp_path / "s.json")
+    c.timeframe, c.trend_timeframe, c.scan_timeframes = "15m", "1h", ["1m", "5m", "15m", "1h"]
+    asked = []
+    b = FakeBroker(_df_ending_in_signal(c))
+    real = b.ohlcv
+    b.ohlcv = lambda s, tf, n: (asked.append(tf), real(s, tf, n))[1]
+    e = Engine(c, b)
+    e.step()
+    assert {"1m", "5m", "15m", "1h"} <= set(asked)
+    assert set(e.lanes) == {"1m", "5m", "1h"}
+    assert e.lanes["1m"].strategy.max_hold_bars == c.strategy.max_hold_bars * 15
+    assert e.cfg.timeframe == "15m"  # lanes never leak into the main settings
+    if b.opened:
+        assert e.trades["BTC/USDT:USDT"].tf in ("1m", "5m", "15m", "1h")
+
+
+def test_normal_mode_scans_fast_and_slow():
+    c = load_config(ROOT / "config.yaml")
+    assert set(c.scan_timeframes) == {"1m", "5m", "15m", "1h"}

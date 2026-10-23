@@ -4,10 +4,12 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import copy
 import math
 import threading
 import time
 from dataclasses import asdict, dataclass, field, fields
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,6 +63,7 @@ class Trade:
     exit_px: float = 0.0      # 盘口模式: price of the resting limit exit after the hold time
     exit_kind: str = ""       #   profit / breakeven / late: which 人工平法 step that exit is
     exit_since: int = 0       #   when it was placed
+    tf: str = ""              # 快慢一起: entry timeframe that opened it (its hold time and stops)
 
 
 @dataclass
@@ -92,6 +95,22 @@ class Engine:
         self.coin_pause: dict[str, int] = {}   # 盘口模式: coin losing live, paused until
         self.feed: FlowFeed | None = None
         self.risk = RiskManager(cfg, self._load_state())
+        self.lanes = {tf: lane_config(cfg, tf) for tf in cfg.scan_timeframes
+                      if tf in TREND_OF and tf != cfg.timeframe}
+
+    @contextmanager
+    def _as_lane(self, tf: str):
+        """Run with the settings of entry timeframe tf (its candles, hold time, entry wait)."""
+        lane = self.lanes.get(tf)
+        if lane is None:
+            yield
+            return
+        saved = self.cfg, self.tf_ms
+        self.cfg, self.tf_ms = lane, TF_MS[tf]
+        try:
+            yield
+        finally:
+            self.cfg, self.tf_ms = saved
 
     # ---------- persistence ----------
     def _load_state(self) -> RiskState:
@@ -120,6 +139,8 @@ class Engine:
         for s in missing:
             log.warning("no futures market for %s on Bitget, skipping it", s)
         self.cfg.symbols = [s for s in self.cfg.symbols if s not in missing]
+        for lane in self.lanes.values():
+            lane.symbols = self.cfg.symbols
         if not self.cfg.symbols:
             raise SystemExit("选的币 Bitget 都没有合约")
         for s in self.cfg.symbols:
@@ -165,19 +186,27 @@ class Engine:
             self._flow_step(now, positions)
             self._save_state()
             return
-        scans = []
+        # slowest timeframe first: when two agree on the same coin the bigger picture opens it
+        tfs = sorted({self.cfg.timeframe, *self.lanes}, key=lambda x: -TF_MS[x])
+        scanned = {}
         for sym in self.cfg.symbols:
-            scans.append(self._refresh_bars(sym, now, positions))
+            for tf in tfs:
+                with self._as_lane(tf):
+                    x = self._refresh_bars(sym, now, positions)
+                if x:
+                    scanned.setdefault(tf, []).append(x)
             if sym in positions:
-                self._manage(sym, positions[sym], now)
-        scans = [x for x in scans if x]
-        if scans:
+                with self._as_lane(self.trades[sym].tf if sym in self.trades else ""):
+                    self._manage(sym, positions[sym], now)
+        for tf, scans in scanned.items():
             # one line per closed bar so the log shows the bot is looking, even with no trade
             trends = [t for t, _ in scans]
-            log.info("SCAN %d coins up=%d down=%d flat=%d signals=%d", len(scans),
+            log.info("SCAN %d coins up=%d down=%d flat=%d signals=%d%s", len(scans),
                      trends.count(1), trends.count(-1), trends.count(0),
-                     sum(1 for _, sig in scans if sig))
-            nxt = (now // self.tf_ms + 1) * self.tf_ms
+                     sum(1 for _, sig in scans if sig), f" tf={tf}" if self.lanes else "")
+        if scanned:
+            fast = TF_MS[tfs[-1]]
+            nxt = (now // fast + 1) * fast
             log.info("NEXT SCAN %s", datetime.fromtimestamp(nxt / 1000, timezone.utc).isoformat())
         self._save_state()
 
@@ -317,6 +346,11 @@ class Engine:
     def _forget_closed(self, now: int, positions: dict[str, Position]) -> None:
         """A tracked trade with no exchange position was closed by the exchange stop/TP."""
         for sym in [s for s in self.trades if s not in positions]:
+            with self._as_lane(self.trades[sym].tf):
+                self._forget_one(sym, now)
+
+    def _forget_one(self, sym: str, now: int) -> None:
+        if True:
             t = self.trades.pop(sym)
             self._cancel_tp(sym, t)  # stop hit: the limit take-profit must not stay behind
             now_px = self.broker.price(sym)
@@ -402,7 +436,8 @@ class Engine:
                       positions: dict[str, Position]) -> tuple[int, bool] | None:
         """On a newly closed bar: (trend -1/0/1, signal found); None if nothing new."""
         cur_bar = (now // self.tf_ms) * self.tf_ms - self.tf_ms  # last fully closed bar
-        if self.last_bar.get(sym) == cur_bar:
+        key = sym if self.cfg.timeframe not in self.lanes else f"{sym}@{self.cfg.timeframe}"
+        if self.last_bar.get(key) == cur_bar:
             return None
         df = self.broker.ohlcv(sym, self.cfg.timeframe, HISTORY_BARS)
         trend_bars = self.cfg.strategy.trend_ema * 3 + 10
@@ -411,8 +446,8 @@ class Engine:
             return None
         prepared = prepare(df, dft, self.cfg)
         row = prepared.iloc[-1]
-        self.last_bar[sym] = int(row["ts"])
-        self.atr[sym] = float(row["atr"])
+        self.last_bar[key] = int(row["ts"])
+        self.atr[key] = float(row["atr"])
         trend = int(row["trend"])
         if sym in positions or sym in self.pending:
             return trend, False
@@ -595,7 +630,7 @@ class Engine:
         n = self.cfg.leader_bars
         if n <= 0:
             return None
-        bar = now // self.tf_ms
+        bar = (self.cfg.timeframe, now // self.tf_ms)
         if getattr(self, "_leader", (None,))[0] != bar:
             try:
                 df = self.broker.ohlcv(self.cfg.leader_symbol, self.cfg.timeframe, n + 5)
@@ -765,7 +800,7 @@ class Engine:
                  "add_plan": add, "tps": tps[:-1],
                  "tp_qtys": [self.broker.round_qty(sym, qty * f) for f in s.take_profit_split],
                  "reason": sig.reason + " | " + " ".join(f"{k}={v}" for k, v in seen.items()),
-                 "kind": sig.kind}
+                 "kind": sig.kind, "tf": self.cfg.timeframe if self.lanes else ""}
         margin = sizing.margin * qty / sizing.qty
         if swap:  # only now that the new trade is certain to be placed
             self._swap_out(swap, sym, now, positions)
@@ -829,8 +864,9 @@ class Engine:
             self._place_tp(sym, t)
         t.best = max(t.best, price) if t.side == "long" else min(t.best, price)
         bars = (now - t.opened_ms) // self.tf_ms
+        atr = self.atr.get(f"{sym}@{t.tf}", self.atr.get(sym, 0.0)) if t.tf else self.atr.get(sym, 0.0)
         d = manage_position(t.side, t.entry, t.stop, t.initial_stop, price, t.best,
-                            self.atr.get(sym, 0.0), bars, self.cfg)
+                            atr, bars, self.cfg)
         if d.new_stop is not None:
             t.stop = d.new_stop
         if d.close and d.reason == "max hold time" and self.cfg.strategy.late_exit:
@@ -899,3 +935,20 @@ class Engine:
                 t.stop = be
             log.info("PARTIAL %s %s qty=%s @ %.10g (take-profit %.10g) gain %.2f, stop now %.10g",
                      sym, t.side, q, fill, level, gain, t.stop)
+
+
+# entry timeframe -> its trend timeframe (快慢一起)
+TREND_OF = {"1m": "15m", "3m": "15m", "5m": "1h", "15m": "1h", "30m": "4h", "1h": "4h"}
+
+
+def lane_config(cfg: Config, tf: str) -> Config:
+    """cfg for entry timeframe tf: its trend candles, an entry that waits one bar, and the
+    same hold time in hours as the main timeframe."""
+    lane = copy.copy(cfg)
+    lane.strategy = copy.copy(cfg.strategy)
+    lane.timeframe, lane.trend_timeframe = tf, TREND_OF[tf]
+    lane.maker_timeout_seconds = TF_MS[tf] // 1000
+    hold_ms = cfg.strategy.max_hold_bars * TF_MS[cfg.timeframe]
+    lane.strategy.max_hold_bars = max(1, hold_ms // TF_MS[tf])
+    lane.risk = cfg.risk
+    return lane
