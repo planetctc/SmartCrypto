@@ -244,7 +244,16 @@ def _friendly(line: str) -> str:
     if r := re.match(r"CLOSE (\S+) \S+ qty=\S+ @ (\S+) \((.+)\) pnl≈(\S+)", msg):
         return (f"{t}  {coin(r[1])} 平仓 @ {r[2]}（{REASONS.get(r[3], r[3])}），"
                 f"约 {float(r[4]):+.2f} USDT")
+    if r := re.match(r"STRUCT (\S+) score (\S+) res (\S+) sup (\S+)", msg):
+        mood = "偏多" if int(r[2]) >= 2 else "偏空" if int(r[2]) <= -2 else "震荡"
+        return f"{t}  {coin(r[1])} 大结构 {r[2]} 分（{mood}），阻力 {r[3]}，支撑 {r[4]}"
     if r := re.match(r"(\S+) signal skipped: (.*)", msg):
+        if m := re.match(r"structure against it \(score (\S+)\)", r[2]):
+            return f"{t}  {coin(r[1])} 有信号但没开单：1h/4h/日线大结构反方向（{m[1]} 分）"
+        if m := re.match(r"long right under resistance (\S+)", r[2]):
+            return f"{t}  {coin(r[1])} 有信号但没开单：离阻力 {m[1]} 太近，不追多"
+        if m := re.match(r"short right on support (\S+)", r[2]):
+            return f"{t}  {coin(r[1])} 有信号但没开单：离支撑 {m[1]} 太近，不追空"
         if m := re.match(r"BTC moving against it \((\S+)% in (\d+) bars\)", r[2]):
             return (f"{t}  {coin(r[1])} 有信号但没开单：BTC 最近 {m[2]} 分钟 {float(m[1]):+.2f}%，"
                     f"大盘在反方向走")

@@ -1253,3 +1253,67 @@ def test_market_snapshot_tolerates_missing_data():
         def fetch_long_short_ratio_history(self, *a): return [{"longShortRatio": 1.7}]
     row = market_snapshot(Ex(), "BTC/USDT:USDT")
     assert row["funding"] == 0.0001 and row["open_interest"] == "" and row["long_short"] == 1.7
+
+
+def _candles(n, step_ms, drift, start=100.0, seed=1):
+    rng = np.random.default_rng(seed)
+    c = start * np.exp(np.cumsum(rng.normal(drift, 0.002, n)))
+    return pd.DataFrame({"ts": 1_700_000_000_000 - (n - np.arange(n)) * step_ms, "open": c,
+                         "high": c * 1.002, "low": c * 0.998, "close": c, "volume": 100.0})
+
+
+def test_structure_scores_up_and_down_markets():
+    from bot.structure import snapshot
+    up = snapshot(_candles(200, 3_600_000, 0.002), _candles(200, 14_400_000, 0.004),
+                  _candles(60, 86_400_000, 0.01))
+    down = snapshot(_candles(200, 3_600_000, -0.002), _candles(200, 14_400_000, -0.004),
+                    _candles(60, 86_400_000, -0.01))
+    assert up["score"] >= 3 and down["score"] <= -3
+    assert up["sup"] < up["res"] and up["macd4h"] > 0 > down["macd4h"]
+
+
+def test_structure_sees_false_breakout_and_volume_reclaim():
+    from bot.structure import _reclaim
+    h = _candles(100, 3_600_000, 0.0, seed=2)
+    h[["open", "high", "low", "close"]] = 100.0
+    h.loc[h.index[:-24], "high"] = 101.0                 # old high 101
+    fake = h.copy()
+    fake.loc[fake.index[-10], "high"] = 102.0            # poked above, closed back under
+    assert _reclaim(fake) == -1
+    back = fake.copy()
+    back.loc[back.index[-3:], ["close", "high"]] = 101.5  # back above on heavy volume
+    back.loc[back.index[-3], "volume"] = 500.0
+    assert _reclaim(back) == 1
+
+
+def test_signal_against_a_strong_structure_is_not_opened(tmp_path):
+    c = cfg()
+    c.symbols, c.state_file = ["ETH/USDT:USDT"], str(tmp_path / "s.json")
+    df = _df_ending_in_signal(c)
+    b = FakeBroker(df)
+    Engine(c, b).step()
+    assert b.opened
+    side = b.opened[0][1]
+    k = -1 if side == "long" else 1                      # structure the other way
+    big = {"1h": _candles(200, 3_600_000, k * 0.002), "4h": _candles(200, 14_400_000, k * 0.004),
+           "1d": _candles(60, 86_400_000, k * 0.01)}
+    for on, want in ((0, True), (3, False)):
+        b2 = FakeBroker(df)
+        real = b2.ohlcv
+        # the structure asks for 200 / 200 / 60 bars; the 1h trend filter asks for fewer
+        b2.ohlcv = lambda s, tf, n: big[tf] if tf in big and n in (60, 200) else real(s, tf, n)
+        c.structure_min_score, c.state_file = on, str(tmp_path / f"s{on}.json")
+        Engine(c, b2).step()
+        assert bool(b2.opened) is want
+
+
+def test_full_study_uses_the_big_structure_columns(tmp_path):
+    from bot.fullstudy import study
+    d = _orderflow_csv(tmp_path / "a", edge=True)
+    t0 = 1_700_000_000_000
+    st = pd.DataFrame({"avail": t0 + np.arange(0, 9) * 3_600_000, "res": 101.0, "sup": 99.0,
+                       "round_dist": 0.001, "slope1h": np.linspace(-1e-4, 1e-4, 9),
+                       "slope4h": 1e-4, "macd4h": 0.001, "boll_d": 1, "box_d": 0.6,
+                       "reclaim": 0, "score": np.arange(9) % 3})
+    rep = study(d, {"BTC": st})
+    assert "大结构" in rep and "✓" in rep

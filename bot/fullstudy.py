@@ -6,6 +6,9 @@ side every 10 seconds and fits one model on the first 2/3 of the recording:
   candles    : 1/5/15-minute returns, RSI, MACD, Bollinger position, ATR, distance from EMA50,
                volume vs average (all on CLOSED 1-minute bars built from the recording)
   positioning: funding rate, open interest change over 15 minutes, long/short account ratio
+  大结构     : 1h/4h/daily like the analyst notes (bot/structure.py): distance to resistance and
+               support, round numbers, 1h and 4h channel direction, 4h MACD vs zero, daily close
+               vs Bollinger middle and box, false breakout / volume reclaim, total score
 The model (ridge regression) predicts the move over the next 1 / 3 / 10 minutes. It is then
 traded on the last 1/3 it never saw: only when the prediction is in its strongest 10% / 5% /
 1%, one trade at a time per coin, and the result is compared with the round-trip cost.
@@ -31,7 +34,30 @@ NAMES = {
     "rsi": "RSI", "macd": "MACD", "boll": "布林带位置", "atr": "波动大小(ATR)",
     "ema_dist": "离 EMA50 多远", "vol_ratio": "成交量比平时", "funding": "资金费率",
     "oi_chg": "持仓量变化", "long_short": "多空比",
+    "dist_res": "离阻力多远", "dist_sup": "离支撑多远", "round_dist": "离整数关口多远",
+    "slope1h": "1 小时通道方向", "slope4h": "4 小时通道方向", "macd4h": "4 小时 MACD 零轴上下",
+    "boll_d": "日线在布林中轨上下", "box_d": "日线在箱体的位置", "reclaim": "假突破/放量收回",
+    "score": "大结构总分",
 }
+STRUCT = ("res", "sup", "round_dist", "slope1h", "slope4h", "macd4h", "boll_d", "box_d",
+          "reclaim", "score")
+
+
+def fetch_structure(coins: list[str], since_ms: int, data_dir: str | Path) -> dict[str, pd.DataFrame]:
+    """1h/4h/daily candles from Bitget for each coin, turned into structure.history()."""
+    from .data import download
+    from .structure import history
+    days = int((pd.Timestamp.now("UTC").value // 1_000_000 - since_ms) / 86_400_000) + 1
+    out = {}
+    for c in coins:
+        sym = f"{c}/USDT:USDT"
+        try:
+            h1, h4, d1 = (pd.read_csv(download(sym, tf, days + extra, data_dir=str(data_dir)))
+                          for tf, extra in (("1h", 12), ("4h", 40), ("1d", 60)))
+            out[c] = history(h1, h4, d1, since_ms)
+        except Exception as e:  # noqa: BLE001 - a coin without candles just lacks these columns
+            print(f"{c} 大结构没读到：{e}")
+    return out
 
 
 def load_market(data_dir: str | Path) -> dict[str, pd.DataFrame]:
@@ -45,7 +71,8 @@ def load_market(data_dir: str | Path) -> dict[str, pd.DataFrame]:
             for c, fs in out.items()}
 
 
-def coin_table(raw: pd.DataFrame, market: pd.DataFrame | None) -> pd.DataFrame:
+def coin_table(raw: pd.DataFrame, market: pd.DataFrame | None,
+               struct: pd.DataFrame | None = None) -> pd.DataFrame:
     """One row every STEP_S seconds with every feature (past data only) and the future moves."""
     f10, f30, f60 = (features(raw, w) for w in (10, 30, 60))
     d = f30.copy()
@@ -86,6 +113,12 @@ def coin_table(raw: pd.DataFrame, market: pd.DataFrame | None) -> pd.DataFrame:
     for col in ("funding", "oi_chg", "long_short"):
         if col not in s:
             s[col] = np.nan
+    if struct is not None and len(struct):
+        st = struct.sort_values("avail").rename(columns={"avail": "st_avail"})
+        s = pd.merge_asof(s, st[["st_avail", *STRUCT]], left_on="ts", right_on="st_avail",
+                          direction="backward")
+        s["dist_res"] = s["res"] / s["mid"] - 1     # from the live price, not the hourly close
+        s["dist_sup"] = s["mid"] / s["sup"] - 1
     ts = d["ts"].to_numpy()
     mid = d["mid"].to_numpy()
     for h in HOLDS:
@@ -114,20 +147,22 @@ def _trade(sub: pd.DataFrame, pred: np.ndarray, thr: float, hold: int) -> pd.Dat
     return pd.DataFrame(rows, columns=["ts", "move"])
 
 
-def study(data_dir: str | Path) -> str:
+def study(data_dir: str | Path, structure: dict[str, pd.DataFrame] | None = None) -> str:
     frames = load(data_dir)
     hours = hours_of(frames)
     if not frames or hours < MIN_HOURS:
         return f"全面分析：1 秒级的盘口数据还不够 {MIN_HOURS:.0f} 小时（现在 {hours:.1f} 小时），继续记录。"
     market = load_market(data_dir)
-    table = pd.concat([coin_table(f, market.get(c)).assign(coin=c) for c, f in frames.items()],
-                      ignore_index=True)
+    structure = structure or {}
+    table = pd.concat([coin_table(f, market.get(c), structure.get(c)).assign(coin=c)
+                       for c, f in frames.items()], ignore_index=True)
     feats = [k for k in NAMES if k in table and table[k].notna().mean() > 0.5]
     t0, t1 = table["ts"].min(), table["ts"].max()
     cut = t0 + (t1 - t0) * 2 / 3
     days = hours / 24
     lines = [f"全面分析：{len(frames)} 个币，{hours:.1f} 小时，每 {STEP_S} 秒看一次，"
-             f"一起看 {len(feats)} 种数据（盘口、K 线指标、资金费率/持仓量/多空比）。",
+             f"一起看 {len(feats)} 种数据（盘口、K 线指标、资金费率/持仓量/多空比、"
+             f"1h/4h/日线大结构）。",
              "电脑在前 2/3 时间里自己算每种数据该占多少分量，再在后 1/3（没看过的）上照着做。",
              f"每单成本：挂单进出约 {MAKER_RT:.2%}。", ""]
     best = None

@@ -293,10 +293,14 @@ def cmd_flowtest(cfg, args):
     out = Path(args.data_dir)
     out.mkdir(exist_ok=True)
     (out / "tune_progress.txt").write_text("分析盘口数据…", encoding="utf-8")
-    from bot.fullstudy import study
-    report = analyse(load(out))
+    from bot.fullstudy import fetch_structure, study
+    frames = load(out)
+    report = analyse(frames)
+    (out / "tune_progress.txt").write_text("下载 1h/4h/日线算大结构…", encoding="utf-8")
+    structure = fetch_structure(list(frames), min(f["ts"].iloc[0] for f in frames.values()),
+                                out) if frames else {}
     (out / "tune_progress.txt").write_text("全面分析中…", encoding="utf-8")
-    report += "\n\n" + "=" * 30 + "\n\n" + study(out)
+    report += "\n\n" + "=" * 30 + "\n\n" + study(out, structure)
     (out / "flowtest_report.txt").write_text(report, encoding="utf-8")
     print(report)
 

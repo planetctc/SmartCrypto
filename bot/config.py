@@ -100,6 +100,10 @@ class Config:
     leader_bars: int = 0
     leader_min_move: float = 0.0     # BTC must move at least this much against (0.0005 = 0.05%)
     leader_symbol: str = "BTC/USDT:USDT"
+    # 大结构 (1h/4h/daily): skip trades against a strong structure score (|score| >= this,
+    # out of 5) and longs right under resistance / shorts right on support; 0 = off
+    structure_min_score: int = 0
+    structure_near_level: float = 0.0015  # "right under" = within 0.15%
     entry_order: str = "market"      # "market" or "maker" (post-only limit, lower fee)
     maker_timeout_seconds: int = 60  # cancel an unfilled maker entry after this long
     # take-profit as a resting reduce-only limit order (maker fee, no slippage) instead of the

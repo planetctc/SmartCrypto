@@ -14,6 +14,7 @@ from .config import Config
 from .exchange import Position
 from .orderflow import flow_agrees
 from .risk import RiskManager, RiskState
+from .structure import snapshot
 from .strategy import TF_MS, manage_position, prepare, scales_in, signal_at, trade_plan
 
 log = logging.getLogger("bot.engine")
@@ -392,6 +393,24 @@ class Engine:
                 self._leader = (bar, None)
         return self._leader[1]
 
+    def _structure(self, sym: str, now: int) -> dict | None:
+        """1h/4h/daily structure for sym, refreshed once per hour; None if off or not read."""
+        if self.cfg.structure_min_score <= 0:
+            return None
+        cache = self.__dict__.setdefault("_struct", {})
+        hour = now // 3_600_000
+        if sym not in cache or cache[sym][0] != hour:
+            try:
+                snap = snapshot(self.broker.ohlcv(sym, "1h", 200), self.broker.ohlcv(sym, "4h", 200),
+                                self.broker.ohlcv(sym, "1d", 60))
+                log.info("STRUCT %s score %+d res %.10g sup %.10g", sym, snap["score"],
+                         snap["res"], snap["sup"])
+            except Exception as e:  # noqa: BLE001 - never block trading on this
+                log.warning("%s structure not read (%s)", sym, e)
+                snap = None
+            cache[sym] = (hour, snap)
+        return cache[sym][1]
+
     def _open_risk(self) -> float:
         """USDT lost if every open trade hit its stop now (trades already at break-even add 0)."""
         f = self.cfg.fees
@@ -455,10 +474,25 @@ class Engine:
             log.info("%s signal skipped: BTC moving against it (%+.2f%% in %d bars)", sym,
                      move * 100, self.cfg.leader_bars)
             return
+        st = self._structure(sym, now)
+        if st:
+            sign = sign_of(sig.side)
+            if sign * st["score"] <= -self.cfg.structure_min_score:
+                log.info("%s signal skipped: structure against it (score %+d)", sym, st["score"])
+                return
+            near = self.cfg.structure_near_level
+            if sign > 0 and st["res"] > sig.entry and st["res"] / sig.entry - 1 < near:
+                log.info("%s signal skipped: long right under resistance %.10g", sym, st["res"])
+                return
+            if sign < 0 and st["sup"] < sig.entry and sig.entry / st["sup"] - 1 < near:
+                log.info("%s signal skipped: short right on support %.10g", sym, st["sup"])
+                return
         flow = None
         seen = {"kind": sig.kind, "btc": "" if move is None else f"{move * 100:+.3f}%",
                 "atr": f"{sig.atr / sig.entry * 100:.3f}%",
                 "hour": datetime.fromtimestamp(now / 1000, timezone.utc).hour}
+        if st:
+            seen["struct"] = f"{st['score']:+d}"
         if self.cfg.flow_confirm and hasattr(self.broker, "flow"):
             try:
                 flow = self.broker.flow(sym)
