@@ -348,7 +348,7 @@ class Panel(tk.Tk):
         self.proc: subprocess.Popen | None = None
         self.tune_proc: subprocess.Popen | None = None
         self.test_proc: subprocess.Popen | None = None
-        self.mode = tk.StringVar(value="盘口模式")
+        self.mode = tk.StringVar(value="普通模式")
         self.raw = tk.BooleanVar(value=False)
         st = load_settings()
         self.coin_vars = {c: tk.BooleanVar(value=c in st["coins"]) for c in COINS}
