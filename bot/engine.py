@@ -216,6 +216,8 @@ class Engine:
             if sym in positions:
                 with self._as_lane(self.trades[sym].tf if sym in self.trades else ""):
                     self._manage(sym, positions[sym], now)
+        if self.cfg.flow_entry:
+            self._flow_entries(now, positions)
         if self.cfg.live_watch:
             for sym in self.cfg.symbols:
                 if sym not in positions and sym not in self.trades and sym not in self.pending:
@@ -525,6 +527,18 @@ class Engine:
             or sign * (px - lv) >= 0 and name in ("res", "round") and side == "short" else "breakout"
         if sign * (px - lv) < 0:
             return  # still on the wrong side of the level: wait for it to hold or break
+        # live 10/24: ADA and SOL shorts the moment price touched the level were stopped in
+        # 1-9 minutes when it held; the same side past the same level must last watch_hold_s
+        seen = self.__dict__.setdefault("_watch_seen", {})
+        key = (side, round(lv, 12))
+        if seen.get(sym, (None, 0))[0] != key:
+            seen[sym] = (key, now)
+            log.info("WATCH-WAIT %s %s past %s %.10g, entering if it holds %d s", sym, side,
+                     name, lv, self.cfg.watch_hold_s)
+            return
+        if now - seen[sym][1] < self.cfg.watch_hold_s * 1000:
+            return
+        seen.pop(sym)
         r = self.cfg.risk
         dist = min(max(abs(px - lv) + px * 0.001, px * r.min_stop_pct), px * r.max_stop_pct)
         stop = px - sign * dist
@@ -686,6 +700,33 @@ class Engine:
         if getattr(self, "_flow_minute", None) != minute:
             self._flow_minute = minute
             log.info("FLOWSCAN %d coins live %d signals %d", len(c.symbols), live, signals)
+
+    def _flow_entries(self, now: int, positions: dict[str, Position]) -> None:
+        """普通模式 + 盘口进场: the tested order-flow signal, fixed settings (no auto-tune)."""
+        if self.feed is None:
+            self.feed = FlowFeed(self.state_path.parent, self.cfg.symbols)
+        feed, c = self.feed, self.cfg
+        feed.update(now)
+        feed.ensure_recorder(now, c.symbols)
+        for sym in c.symbols:
+            if (sym in positions or sym in self.pending or sym in self.trades
+                    or sym.split("/")[0] in c.flow_skip_coins or now < self.entry_wait.get(sym, 0)):
+                continue
+            f = feed.latest(sym, c.flow_window)
+            if not f or now - f["ts"] > FRESH_MS:
+                continue
+            side = flow_side(f, c.flow_threshold, c.flow_burst)
+            if side is None:
+                continue
+            sign = sign_of(side)
+            stop = f["mid"] * (1 - sign * c.flow_stop_pct)
+            sig = Signal(side, f["mid"], stop, 0.0, f["mid"] * c.flow_stop_pct, 1.0,
+                         f"flow {f['flow']:+.2f} burst {f['burst']:.1f}x book {f['tilt']:+.2f}",
+                         kind="flow", book={"bid": f["bid"], "ask": f["ask"]})
+            log.info("FLOWSIG %s %s taker %+.2f volume %.1fx book %+.2f", sym, side, f["flow"],
+                     f["burst"], f["tilt"])
+            self.entry_wait[sym] = now + ENTRY_RETRY_MS  # one try per signal burst
+            self._try_open(sym, sig, now, positions)
 
     def _autotune(self, now: int) -> None:
         """Every flow_autotune_hours re-pick entry + exit from the recording (in a background
@@ -1075,7 +1116,7 @@ class Engine:
             t = Trade(p.side, p.qty, p.entry, stop, stop, p.entry, p.entry, now)
             self.trades[sym] = t
             log.warning("%s adopted unknown position, managed stop %.10g", sym, stop)
-        if self.flow_mode:
+        if self.flow_mode or t.kind == "flow":
             self._flow_exit(sym, p, t, now)
             return
         price = self.broker.price(sym)

@@ -251,6 +251,9 @@ def _friendly(line: str) -> str:
             st += f"，多空比 {r[9]}"
         return (f"{t}  {coin(r[1])} {tf}：均线{way}，再涨 {float(r[4]):.2f}% 突破可做多，"
                 f"再跌 {float(r[5]):.2f}% 跌破可做空，成交量 {r[6]} 倍{st}")
+    if r := re.match(r"WATCH-WAIT (\S+) (long|short) past (\S+) (\S+), entering if it holds (\d+) s", msg):
+        what = {"sup": "支撑", "res": "阻力", "round": "整数关口"}.get(r[3], r[3])
+        return f"{t}  {coin(r[1])} 实时看盘：价格过了{what} {r[4]}，想{side(r[2])}，等 {r[5]} 秒看站不站得稳"
     if r := re.match(r"WATCH (\S+) (long|short) at (\S+) (\S+) taker (\S+)% book (\S+)", msg):
         what = {"sup": "支撑", "res": "阻力", "round": "整数关口"}.get(r[3], r[3])
         return (f"{t}  {coin(r[1])} 实时看盘：价格在{what} {r[4]}，主动{'买' if r[2] == 'long' else '卖'}占 {r[5]}%，"

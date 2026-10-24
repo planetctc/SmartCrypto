@@ -23,6 +23,16 @@ symbols:
 timeframe: 15m         # 每 15 分钟扫描一次找进场（大结构、BTC、盘口照样全面看）
 scan_timeframes: [1m, 5m, 15m, 1h]  # 快慢一起扫：1 分、5 分、15 分、1 小时哪个先出信号就开单（每个币一单），全部要过全面看
 live_watch: true         # 实时看盘：每 10 秒看价格是否在大结构的支撑/阻力/整数关口，主动成交至少 60% 一边倒就进（守住或突破），不等 K 线
+watch_hold_s: 60         # 实时看盘：价格过了关口要站稳 60 秒才进，不是一碰到就进（10/24 ADA、SOL 一碰就空，几分钟被止损）
+flow_entry: true         # 盘口进场：23.7 小时数据两段都赚的组合（下面 flow_*），也要过全面看
+flow_window: 60          # 看最近 60 秒成交
+flow_threshold: 0.7      # 主动方向至少 70%
+flow_burst: 4.0          # 成交量是平时 4 倍以上
+flow_exit: manual        # 人工平法：20 分钟后有赚就走，没赚挂在回本价多 0.05% 等，4 小时后找最近高点平
+flow_hold_seconds: 1200
+flow_be_margin: 0.0005
+flow_stop_pct: 0.008     # 止损 0.8%
+flow_skip_coins: [SOL]   # SOL 两段都亏，不做
 trend_timeframe: 1h    # 判断大方向的 K 线周期
 
 # ---------------- 全面看盘（每单进场前都要过） ----------------

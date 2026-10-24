@@ -31,6 +31,7 @@ def cfg() -> Config:
     c.flow_confirm = False
     c.scan_timeframes = []  # one timeframe: the mechanics below are per bar
     c.strategy.signal_type = "breakout"  # the trend-following breakout these tests were built on
+    c.flow_entry = c.live_watch = False  # no recorder threads or live reads in these tests
     return c
 
 
@@ -1661,6 +1662,9 @@ def test_live_watch_buys_a_held_support_with_buyers_in_charge_without_a_candle_s
                         "buy_qty": 8, "sell_qty": 2}
     e = Engine(c, b)
     e._structure = lambda sym, now: {"score": 0, "res": px * 1.05, "sup": px * 0.999}
+    e.step()
+    assert not b.opened  # first touch: waits to see it hold
+    b.now += 61_000
     e.step()
     assert b.opened and b.opened[0][1] == "long"
 

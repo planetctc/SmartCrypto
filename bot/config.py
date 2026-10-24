@@ -131,6 +131,11 @@ class Config:
     # strongly against (-3); 0 = off
     votes_need: int = 0
     live_watch: bool = False
+    watch_hold_s: int = 60           # price must stay past the level this long (not first touch)
+    # 盘口进场 in 普通模式: the order-flow signal that made money in both parts of the 23.7 h
+    # test with real fills (60 s, >=70%, volume 4x, 人工平法), as one more way in; its trades
+    # get out the 盘口 way (flow_* settings), and pass the same 全面看 checks
+    flow_entry: bool = False
     watch_near: float = 0.002        # "at the level" = within 0.2%
     watch_min_share: float = 0.6     # live taker share on our side
     watch_cooldown_s: int = 300      # one look-in per coin per 5 minutes after a trigger
